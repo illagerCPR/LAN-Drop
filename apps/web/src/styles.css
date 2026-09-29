@@ -1,0 +1,587 @@
+/* ============================================================= 基础 */
+
+:root {
+  --bg: #0b1220;
+  --panel: #101a2e;
+  --panel-2: #16223a;
+  --border: #223354;
+  --text: #e7eefb;
+  --text-dim: #8ba0c2;
+  --accent: #38bdf8;
+  --accent-strong: #0284c7;
+  --accent-soft: rgba(56, 189, 248, 0.14);
+  --own-bubble: #155e75;
+  --other-bubble: #182742;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  padding: 9px 18px;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+button.primary {
+  background: var(--accent-strong);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+button.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  padding: 6px 10px;
+}
+
+button.ghost:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.error-text {
+  color: var(--danger);
+  margin: 10px 0 0;
+  font-size: 14px;
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================================= 居中页（加载/配对/错误） */
+
+.center-screen {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 28px 32px;
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+}
+
+.card h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.card .subtitle {
+  margin: 0 0 20px;
+}
+
+/* ============================================================= 配对页 */
+
+.pair-host {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.qr-hint {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.qr-box {
+  padding: 12px;
+  background: #ffffff;
+  border-radius: 14px;
+  line-height: 0;
+}
+
+.pair-url {
+  margin: 0;
+  font-size: 12px;
+  word-break: break-all;
+  user-select: text;
+}
+
+.code-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.pair-code {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.pair-guest form {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.code-input {
+  flex: 1;
+  text-align: center;
+  font-size: 18px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  min-width: 0;
+}
+
+/* ============================================================= 聊天布局 */
+
+.chat {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.chat-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.logo {
+  font-size: 22px;
+}
+
+.chat-server {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: none;
+}
+
+.chat-status.open .status-dot {
+  background: var(--ok);
+}
+
+.chat-status.connecting .status-dot {
+  background: #facc15;
+}
+
+.chat-status.closed .status-dot {
+  background: var(--danger);
+}
+
+/* ============================================================= 消息列表 */
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.message-list-inner {
+  list-style: none;
+  margin: 0;
+  padding: 16px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.empty-hint {
+  height: 100%;
+  justify-content: center;
+  align-items: center;
+}
+
+.empty {
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.day-divider {
+  align-self: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  margin: 10px 0 2px;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: min(78%, 560px);
+}
+
+.msg.own {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.msg-sender {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 4px 2px;
+}
+
+.msg-body {
+  background: var(--other-bubble);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  overflow-wrap: anywhere;
+}
+
+.msg.own .msg-body {
+  background: var(--own-bubble);
+}
+
+.msg-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-link {
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.msg-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 2px 4px 0;
+}
+
+/* ============================================================= 文件卡片 */
+
+.file-card {
+  min-width: 220px;
+}
+
+.file-preview-link {
+  display: block;
+  margin: -2px -4px 6px;
+}
+
+.file-preview {
+  display: block;
+  max-width: 320px;
+  max-height: 240px;
+  width: 100%;
+  object-fit: contain;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-icon {
+  font-size: 24px;
+  flex: none;
+}
+
+.file-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-name {
+  font-weight: 600;
+  word-break: break-all;
+  font-size: 14px;
+}
+
+.file-size {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.file-download {
+  flex: none;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.file-download:hover {
+  background: var(--accent-soft);
+}
+
+/* ============================================================= 输入区 */
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  flex: none;
+}
+
+.icon-btn {
+  background: transparent;
+  font-size: 20px;
+  padding: 8px;
+  flex: none;
+}
+
+.icon-btn:hover {
+  background: var(--panel-2);
+}
+
+.composer-input {
+  flex: 1;
+  resize: none;
+  min-height: 42px;
+  max-height: 160px;
+  field-sizing: content;
+}
+
+.send-btn {
+  flex: none;
+  min-width: 76px;
+}
+
+.typing-hint {
+  padding: 2px 20px 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: none;
+}
+
+/* ============================================================= 传输面板 / 错误条 */
+
+.transfer-panel {
+  flex: none;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transfer-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.transfer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-percent {
+  color: var(--text-dim);
+  flex: none;
+}
+
+.transfer-bar {
+  height: 5px;
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.transfer-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+.transfer.failed .transfer-fill {
+  background: var(--danger);
+}
+
+.transfer-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.action-error {
+  flex: none;
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 10px;
+  color: var(--danger);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* ============================================================= 拖放遮罩 */
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 132, 199, 0.18);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+  border: 3px dashed var(--accent);
+  border-radius: 4px;
+}
+
+.drop-hint {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 16px 28px;
+  border-radius: 14px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* ============================================================= 窄屏适配 */
+
+@media (max-width: 560px) {
+  .card {
+    padding: 22px 18px;
+  }
+
+  .message-list-inner {
+    padding: 12px 10px 18px;
+  }
+
+  .msg {
+    max-width: 88%;
+  }
+
+  .file-preview {
+    max-width: 240px;
+    max-height: 200px;
+  }
+
+  .composer {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}

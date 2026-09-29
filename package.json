@@ -11,6 +11,8 @@
   "scripts": {
     "dev": "pnpm --filter @lan-drop/server dev",
     "start": "pnpm --filter @lan-drop/server start",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "web:dev": "pnpm --filter @lan-drop/web dev",
+    "web:build": "pnpm --filter @lan-drop/web build"
   }
 }

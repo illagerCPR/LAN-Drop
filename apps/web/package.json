@@ -1,0 +1,26 @@
+{
+  "name": "@lan-drop/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LAN-Drop Web 前端：配对、聊天时间线、拖拽上传与下载",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lan-drop/protocol": "workspace:*",
+    "qrcode.react": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0"
+  }
+}
