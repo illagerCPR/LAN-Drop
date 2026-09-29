@@ -1,17 +1,27 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
+  编码要求：本文件必须以「UTF-8 with BOM」保存，不要去掉 BOM。
+  Windows PowerShell 5.1 对无 BOM 的 .ps1 会按系统 ANSI 代码页（中文系统为 GBK）解码，
+  文件里的中文字符串会被解成乱码，其中某些字节恰好是引号或反引号，会直接破坏语法，
+  报出「参数列表中缺少参数」「意外的标记 )」之类与真实原因无关的错误。
+  PowerShell 7（pwsh）默认按 UTF-8 读取，不受影响——所以「我这儿能跑」并不代表脚本没问题。
+  可用以下命令自查： powershell -c "[void][System.Management.Automation.Language.Parser]::ParseFile('脚本路径',[ref]$null,[ref]$e); $e.Count"
+
 .SYNOPSIS
     放行局域网设备访问本机（WSL 中运行的 LAN-Drop 服务端）。
 
 .DESCRIPTION
     WSL2 处于镜像网络模式（networkingMode=mirrored）时，WSL 直接持有宿主机的局域网 IP，
-    但 Hyper-V 防火墙的入站默认动作是 Block —— 实测表现为：
-        Windows 访问 http://localhost:8787        → 通
-        Windows 访问 http://<局域网IP>:8787       → 超时
-    手机等局域网设备同样会被拦下。本脚本幂等地添加两类入站规则：
-        1. Hyper-V 防火墙规则（针对 WSL 这个 VM Creator）
-        2. 常规 Windows 防火墙规则（顺带覆盖直接在 Windows 上跑服务端的情况）
-    两条规则都把来源限制在本地子网，不对外网开放。
+    手机等局域网设备需要经 Windows 防火墙才能访问 WSL 中运行的服务端。
+    本脚本幂等地添加两类入站规则，来源均限制在本地子网，不对外网开放：
+        1. 常规 Windows 防火墙规则 —— 【实测确认这是让手机访问成功的那一条】
+        2. Hyper-V 防火墙规则（针对 WSL 这个 VM Creator）—— 兜底，失败不影响使用
+
+    一个重要提醒（本项目踩过的坑）：
+    「在宿主机上访问 http://<本机局域网IP>:8787 超时」不能作为「手机连不上」的判据。
+    镜像模式下宿主机连接自己持有的那个 IP 会走本机回环捷径，根本到不了 WSL 的监听套接字，
+    必然假阴性。判断手机是否真的可达，请看服务端日志里的 remoteAddress，
+    或直接用手机打开页面。
 
 .PARAMETER TcpPorts
     需要放行的 TCP 端口，默认 8787（HTTP + WebSocket）。
@@ -79,19 +89,54 @@ function Remove-LanDropRules {
         }
 }
 
-function Get-LanIPv4 {
+function Get-LanAddress {
+    <#
+      取默认路由所在网卡上的 IPv4 地址对象（最接近「手机看到的那个 IP」）。
+    #>
     try {
-        # 取默认路由所在网卡的地址，最接近“手机看到的那个 IP”
         $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
                  Sort-Object RouteMetric | Select-Object -First 1
         if ($route) {
-            $addr = Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop |
-                    Where-Object { $_.IPAddress -notlike '169.254.*' } |
-                    Select-Object -First 1
-            if ($addr) { return $addr.IPAddress }
+            return Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop |
+                   Where-Object { $_.IPAddress -notlike '169.254.*' } |
+                   Select-Object -First 1
         }
     } catch { }
     return $null
+}
+
+function Get-LanIPv4 {
+    $addr = Get-LanAddress
+    if ($addr) { return $addr.IPAddress }
+    return $null
+}
+
+function Get-LanSubnetCidr {
+    <#
+      由本机局域网地址与前缀长度算出网段 CIDR（如 192.168.1.0/24）。
+
+      注意：Hyper-V 防火墙的 -RemoteAddresses 不接受 'LocalSubnet' 这类关键字，
+      必须给显式 CIDR，否则 New-NetFirewallHyperVRule 会直接失败（本项目实际踩到）。
+      掩码按字节构造，避免 PowerShell 的移位/类型转换陷阱：
+      0xFFFFFFFF 在 PowerShell 中是 Int32 的 -1，用它做 -band 相当于没做掩码。
+    #>
+    $addr = Get-LanAddress
+    if (-not $addr) { return $null }
+
+    $ipBytes = [System.Net.IPAddress]::Parse($addr.IPAddress).GetAddressBytes()
+    $prefix  = [int]$addr.PrefixLength
+    $netBytes = New-Object byte[] 4
+
+    for ($i = 0; $i -lt 4; $i++) {
+        $bits = $prefix - ($i * 8)
+        if ($bits -le 0) { $m = 0 }
+        elseif ($bits -ge 8) { $m = 255 }
+        else { $m = (0xFF -shl (8 - $bits)) -band 0xFF }
+        $netBytes[$i] = [byte]($ipBytes[$i] -band $m)
+    }
+
+    $net = ($netBytes | ForEach-Object { "$_" }) -join '.'
+    return "$net/$prefix"
 }
 
 # ---------------------------------------------------------------- 主流程
@@ -115,41 +160,43 @@ if ($Remove) {
     exit 0
 }
 
-# 1) Hyper-V 防火墙：镜像网络模式下 WSL 入站的关键一环
+# 1) Hyper-V 防火墙规则
+#    微软文档指出镜像模式下 WSL 入站会经过 Hyper-V 防火墙，故一并添加。
+#    但本项目实测结论是：仅常规 Windows 防火墙规则就足以让手机访问成功
+#    （服务端日志已见 remoteAddress=192.168.1.101 的 200 响应）。
+#    因此这里失败不视为致命错误，只提示。
 $vmCreatorId = Get-WslVmCreatorId
-Write-Host "WSL VM Creator ID：$vmCreatorId" -ForegroundColor DarkGray
+$lanCidr     = Get-LanSubnetCidr
+Write-Host "WSL VM Creator ID : $vmCreatorId" -ForegroundColor DarkGray
+Write-Host "局域网网段        : $(if ($lanCidr) { $lanCidr } else { '未能探测，Hyper-V 规则将不限制来源' })" -ForegroundColor DarkGray
 
-try {
-    New-NetFirewallHyperVRule `
-        -Name            "$HyperVRuleName-TCP" `
-        -DisplayName     'LAN-Drop (WSL, TCP)' `
-        -Direction       Inbound `
-        -VMCreatorId     $vmCreatorId `
-        -Protocol        TCP `
-        -LocalPorts      ([string[]]($TcpPorts | ForEach-Object { "$_" })) `
-        -RemoteAddresses @($RemoteScope) `
-        -Action          Allow `
-        -Enabled         True | Out-Null
-    Write-Host '  [OK] Hyper-V 规则（TCP）已添加' -ForegroundColor Green
-} catch {
-    Write-Warning "Hyper-V 防火墙规则（TCP）添加失败：$($_.Exception.Message)"
+$hyperVTargets = @(
+    @{ Name = "$HyperVRuleName-TCP"; Display = 'LAN-Drop (WSL, TCP)'; Protocol = 'TCP'; Ports = $TcpPorts }
+)
+if ($UdpPorts.Count -gt 0) {
+    $hyperVTargets += @{ Name = "$HyperVRuleName-UDP"; Display = 'LAN-Drop (WSL, UDP)'; Protocol = 'UDP'; Ports = $UdpPorts }
 }
 
-if ($UdpPorts.Count -gt 0) {
+foreach ($target in $hyperVTargets) {
+    $ruleParams = @{
+        Name        = $target.Name
+        DisplayName = $target.Display
+        Direction   = 'Inbound'
+        VMCreatorId = $vmCreatorId
+        Protocol    = $target.Protocol
+        LocalPorts  = [string[]]($target.Ports | ForEach-Object { "$_" })
+        Action      = 'Allow'
+        Enabled     = $True
+    }
+    # 必须用显式 CIDR：-RemoteAddresses 不接受 'LocalSubnet' 关键字
+    if ($lanCidr) { $ruleParams['RemoteAddresses'] = @($lanCidr) }
+
     try {
-        New-NetFirewallHyperVRule `
-            -Name            "$HyperVRuleName-UDP" `
-            -DisplayName     'LAN-Drop (WSL, UDP)' `
-            -Direction       Inbound `
-            -VMCreatorId     $vmCreatorId `
-            -Protocol        UDP `
-            -LocalPorts      ([string[]]($UdpPorts | ForEach-Object { "$_" })) `
-            -RemoteAddresses @($RemoteScope) `
-            -Action          Allow `
-            -Enabled         True | Out-Null
-        Write-Host '  [OK] Hyper-V 规则（UDP）已添加' -ForegroundColor Green
+        New-NetFirewallHyperVRule @ruleParams | Out-Null
+        Write-Host "  [OK] Hyper-V 规则（$($target.Protocol)）已添加" -ForegroundColor Green
     } catch {
-        Write-Warning "Hyper-V 防火墙规则（UDP）添加失败：$($_.Exception.Message)"
+        Write-Warning "Hyper-V 规则（$($target.Protocol)）添加失败，已跳过：$($_.Exception.Message)"
+        Write-Host '       （不影响使用：本项目实测中常规防火墙规则已足够）' -ForegroundColor DarkGray
     }
 }
 
