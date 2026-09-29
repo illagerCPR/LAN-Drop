@@ -79,7 +79,10 @@ source scripts/dev-env.sh
 pnpm install
 pnpm dev            # 启动后控制台会打印「手机访问 http://<IP>:8787」
 
-# 5) 构建 Android 调试包（产物：android/app/build/outputs/apk/debug/app-debug.apk）
+# 5) 构建 Web UI（服务端检测到 apps/web/dist 后自动托管，浏览器直接访问 :8787）
+pnpm web:build      # 开发热更可用 pnpm web:dev（Vite 代理 /api 到 8787）
+
+# 6) 构建 Android 调试包（产物：android/app/build/outputs/apk/debug/app-debug.apk）
 cd android && ./gradlew :app:assembleDebug
 ```
 
@@ -94,13 +97,26 @@ KSP 2.3.12 / compileSdk 37 / minSdk 33），**改动前请先读
 
 ## 路线图
 
-- **P0** 环境准备与仓库骨架
-- **P1** 服务端核心 + Web UI（PC ↔ 手机浏览器即可互发文字与文件）
+- **P0** 环境准备与仓库骨架 ✅
+- **P1** 服务端核心 + Web UI ✅（PC ↔ 手机浏览器互发文字与文件已可用，≥1 GB 大文件验收待做）
 - **P2** Android 原生客户端 MVP（配对、会话、文字、文件、Room 缓存）
 - **P3** 后台常驻接收、通知、系统分享面板、断点续传、缩略图
 - **P4** 稳定性、打包分发、文档收尾
 
 详见 [docs/技术选型与开发计划.md](docs/技术选型与开发计划.md)。
+
+## 当前进度（P1 已可用）
+
+浏览器打开 `http://<PC局域网IP>:8787`，扫码或一键配对后即可互发文字与文件：
+
+| 配对页（PC 展示二维码） | 聊天页（文字 + 文件卡片） |
+| --- | --- |
+| ![配对页](docs/screenshots/p1-pairing.png) | ![聊天页](docs/screenshots/p1-chat.png) |
+
+已实现：Token 配对（二维码 / 手输 / 本机一键）、聊天时间线（文字 / 链接 / 文件卡片 + 图片预览）、
+拖拽 / 粘贴 / 选单上传（4 MiB 分片 + 断点续传 + sha256 校验）、Range 下载（含中文文件名 RFC 5987）、
+WS 实时广播与指数退避重连（离线缺口由 `since=seq` 补拉）。
+`node scripts/smoke-api.mjs` 43 项端到端冒烟全绿（HTTP + WebSocket）。
 
 ## 开发约定
 
