@@ -1,0 +1,184 @@
+import { createHash } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { extname, join } from "node:path";
+import { Transform, type Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+
+/** Windows 文件名非法字符 + 路径分隔符 + 控制字符。 */
+const ILLEGAL_CHARS = /[<>:"/\\|?*\u0000-\u001F]/g;
+/** Windows 保留设备名（不区分大小写、可带扩展名）。 */
+const WINDOWS_RESERVED =
+  /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+
+const MAX_NAME_LENGTH = 150;
+
+/**
+ * 清洗上传的文件名。
+ *
+ * 不能直接信任客户端传来的名字：它会被拼进磁盘路径，
+ * 一旦含 `../` 或绝对路径就是目录穿越。这里只取基名并剔除危险字符，
+ * 同时兼顾 Windows 的非法字符与保留设备名（PC 端可能是 Windows）。
+ */
+export function sanitizeFileName(raw: string): string {
+  // 先按两种分隔符切，取最后一段，杜绝 ../ 与 C:\ 之类
+  const base = raw.split(/[/\\]/).pop() ?? "";
+  let name = base.replace(ILLEGAL_CHARS, "_").replace(/\s+/g, " ").trim();
+
+  // Windows 不允许文件名以点或空格结尾
+  name = name.replace(/[. ]+$/, "");
+
+  if (name.length > MAX_NAME_LENGTH) {
+    const ext = extname(name).slice(0, 16);
+    name = name.slice(0, MAX_NAME_LENGTH - ext.length) + ext;
+  }
+
+  if (name.length === 0 || name === "." || name === "..") {
+    name = "unnamed";
+  }
+
+  if (WINDOWS_RESERVED.test(name)) {
+    name = `_${name}`;
+  }
+
+  return name;
+}
+
+/** 相对 filesRoot 的落盘路径：按年月分目录，避免单目录堆几万个文件。 */
+export function relativeStoragePath(fileId: string, safeName: string, now = new Date()): string {
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  // 前缀用 fileId，保证同名文件不互相覆盖
+  return join(year, month, `${fileId}_${safeName}`);
+}
+
+/** 流式计算文件 sha256（一次性顺序读，不占内存）。 */
+export async function sha256File(absPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(absPath), hash);
+  return hash.digest("hex");
+}
+
+export interface StreamToFileResult {
+  bytesWritten: number;
+  /** 超出上限被截断时为 true */
+  overflowed: boolean;
+}
+
+/**
+ * 把请求体流式追加写入文件，同时统计字节数。
+ *
+ * 关键点：全程不把 body 读进内存——1 GB 的文件在 512 MB 内存的机器上也要能传。
+ * `limit` 是本次允许写入的最大字节数（= 文件总大小 - 已接收字节数），
+ * 客户端多发了就立刻中断，避免被塞爆磁盘。
+ */
+export async function appendStreamToFile(
+  source: Readable,
+  absPath: string,
+  limit: number,
+): Promise<StreamToFileResult> {
+  let bytesWritten = 0;
+  let overflowed = false;
+
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytesWritten += chunk.length;
+      if (bytesWritten > limit) {
+        overflowed = true;
+        callback(new Error("upload_exceeds_declared_size"));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+
+  try {
+    await pipeline(source, counter, createWriteStream(absPath, { flags: "a" }));
+  } catch (error) {
+    if (overflowed) {
+      return { bytesWritten, overflowed: true };
+    }
+    throw error;
+  }
+
+  return { bytesWritten, overflowed: false };
+}
+
+/** 确保目录存在（递归）。 */
+export async function ensureDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+}
+
+/** 把临时文件搬到最终位置；跨目录同盘时 rename 是原子操作。 */
+export async function moveIntoPlace(from: string, to: string): Promise<void> {
+  await ensureDir(join(to, ".."));
+  await rename(from, to);
+}
+
+export async function removeFileQuietly(absPath: string): Promise<void> {
+  try {
+    await unlink(absPath);
+  } catch {
+    // 文件本就可能不存在，清理失败不应影响主流程
+  }
+}
+
+export async function fileExists(absPath: string): Promise<boolean> {
+  try {
+    await stat(absPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface ByteRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * 解析 `Range: bytes=...` 请求头。
+ *
+ * 支持三种形式：`bytes=0-499`、`bytes=500-`、`bytes=-500`（最后 500 字节）。
+ * 不合法或越界返回 null，调用方按 416 处理。
+ */
+export function parseRange(header: string | undefined, size: number): ByteRange | null {
+  if (!header) return null;
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null;
+
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === "" && rawEnd === "") return null;
+
+  let start: number;
+  let end: number;
+
+  if (rawStart === "") {
+    // bytes=-N：最后 N 字节
+    const suffixLength = Number.parseInt(rawEnd!, 10);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number.parseInt(rawStart!, 10);
+    end = rawEnd === "" ? size - 1 : Number.parseInt(rawEnd!, 10);
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start > end || start >= size) return null;
+
+  return { start, end: Math.min(end, size - 1) };
+}
+
+/**
+ * 构造 Content-Disposition，兼顾中文/特殊字符文件名。
+ *
+ * 同时给出 ASCII 回退名与 RFC 5987 的 `filename*`：
+ * 老客户端用前者（可能不精确），现代浏览器优先用后者（正确的 UTF-8 名）。
+ */
+export function contentDisposition(name: string): string {
+  const asciiFallback = name.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}

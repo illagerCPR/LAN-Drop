@@ -1,11 +1,11 @@
-import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
-// 注意：必须用 ws 的 WebSocket 类型，不能用全局 WebSocket
+// 必须用 ws 的 WebSocket 类型，不能用全局 WebSocket
 // （Node 22+ 暴露的全局 WebSocket 来自 undici，与 @fastify/websocket 的 handler 签名不兼容）
 import type { WebSocket } from "ws";
 
@@ -13,43 +13,29 @@ import {
   ApiPath,
   PROTOCOL_VERSION,
   WsEventType,
+  type MessagePageDto,
   type ServerInfoDto,
 } from "@lan-drop/protocol";
 
-import type { ServerConfig } from "./config.ts";
-import { loadOrCreateIdentity } from "./identity.ts";
+import { resolveDevice } from "./auth.ts";
+import type { AppContext } from "./context.ts";
+import { extractQueryToken, toMessageDto } from "./dto.ts";
+import { isPrivateAddress } from "./net.ts";
+import { registerFileRoutes } from "./routes/files.ts";
+import { registerMessageRoutes } from "./routes/messages.ts";
+import { registerPairRoutes } from "./routes/pair.ts";
 
 const serverRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const publicDir = join(serverRoot, "public");
+const webDistDir = join(serverRoot, "..", "web", "dist");
+const fallbackPublicDir = join(serverRoot, "public");
 
 /** ws 的 readyState 常量。 */
 const WS_READY_OPEN = 1;
+/** 自定义关闭码：鉴权失败（4000-4999 为应用保留区间）。 */
+const WS_CLOSE_UNAUTHORIZED = 4401;
 
-/**
- * 是否属于私有/本机地址。
- *
- * LAN-Drop 是局域网工具，没有任何理由接受公网来源：
- * 万一路由器做了端口映射、或跑在云主机上忘了改配置，
- * 这条防线能让服务保持「只有内网可达」。
- */
-export function isPrivateAddress(rawIp: string): boolean {
-  const ip = rawIp.startsWith("::ffff:") ? rawIp.slice("::ffff:".length) : rawIp;
-
-  if (ip === "::1" || ip === "127.0.0.1") return true;
-  if (ip.startsWith("10.")) return true;
-  if (ip.startsWith("192.168.")) return true;
-  if (ip.startsWith("169.254.")) return true;
-  // 唯一本地地址（IPv6 ULA）
-  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true;
-  // 172.16.0.0/12
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
-
-  return false;
-}
-
-export async function buildServer(config: ServerConfig): Promise<FastifyInstance> {
-  await mkdir(config.filesRoot, { recursive: true });
-  const identity = await loadOrCreateIdentity(config.dataRoot);
+export function createApp(ctx: AppContext): FastifyInstance {
+  const { config } = ctx;
 
   const app = Fastify({
     logger: { level: process.env["LAN_DROP_LOG_LEVEL"] ?? "info" },
@@ -66,56 +52,138 @@ export async function buildServer(config: ServerConfig): Promise<FastifyInstance
     });
   }
 
-  await app.register(fastifyWebsocket);
-  await app.register(fastifyStatic, { root: publicDir, prefix: "/" });
+  // ---- 上传分片是裸字节流，不能按 JSON 解析 ----
+  // 直接透传 Readable，避免 Fastify 把请求体整体读进内存（大文件会直接撑爆堆）。
+  app.addContentTypeParser("application/octet-stream", (_request, payload, done) => {
+    done(null, payload);
+  });
 
-  // ---- GET /api/v1/info ----
+  app.register(fastifyWebsocket);
+
+  // 优先托管前端构建产物；未构建时退回 P0 的连通性冒烟页，方便环境排查。
+  const staticRoot = existsSync(join(webDistDir, "index.html")) ? webDistDir : fallbackPublicDir;
+  app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
+  app.log.info({ staticRoot }, "静态资源目录");
+
+  // ---------------------------------------------------------------- 元信息
   app.get(ApiPath.info, async (): Promise<ServerInfoDto> => ({
     protocolVersion: PROTOCOL_VERSION,
-    serverId: identity.serverId,
+    serverId: ctx.serverId,
     serverName: config.serverName,
     tls: false,
     pairingRequired: config.pairingRequired,
   }));
 
-  app.get("/healthz", async () => ({ ok: true }));
+  app.get("/healthz", async () => ({
+    ok: true,
+    onlineClients: ctx.hub.onlineCount(),
+    latestSeq: ctx.store.latestSeq(),
+  }));
 
-  // ---- WS /api/v1/ws ----
-  // P0 只做连通性验证：回显 ping、推送欢迎事件；P1 接入消息广播与传输进度。
-  app.get(ApiPath.ws, { websocket: true }, (socket: WebSocket, request: FastifyRequest) => {
-    request.log.info({ ip: request.ip }, "WebSocket 客户端已连接");
+  // ---------------------------------------------------------------- 业务路由
+  registerPairRoutes(app, ctx);
+  registerMessageRoutes(app, ctx);
+  registerFileRoutes(app, ctx);
+
+  // ---------------------------------------------------------------- WebSocket
+  app.get(ApiPath.ws, { websocket: true }, (socket: WebSocket, request) => {
+    const device = resolveDevice(
+      ctx.store,
+      request.headers.authorization,
+      extractQueryToken(request.query),
+    );
+
+    if (!device) {
+      socket.close(WS_CLOSE_UNAUTHORIZED, "unauthorized");
+      return;
+    }
+
+    ctx.hub.add(socket, device);
+    request.log.info({ device: device.name }, "WebSocket 已连接");
 
     const send = (type: string, payload?: unknown): void => {
-      // 用字面量而非 socket.OPEN：ws 的 OPEN 是静态成员，
-      // 各版本 @types/ws 对实例属性的声明不一致，这里避开该差异。
       if (socket.readyState === WS_READY_OPEN) {
         socket.send(JSON.stringify({ type, payload }));
       }
     };
 
-    send(WsEventType.messageNew, {
-      serverId: identity.serverId,
+    // 连接即告知当前水位，客户端据此发现「离线期间错过了消息」
+    const page: MessagePageDto = {
+      items: [],
+      latestSeq: ctx.store.latestSeq(),
+      hasMore: false,
+    };
+    send(WsEventType.hello, {
+      deviceId: device.id,
+      serverId: ctx.serverId,
       protocolVersion: PROTOCOL_VERSION,
-      message: "LAN-Drop 服务端已连接",
+      latestSeq: page.latestSeq,
+      onlineCount: ctx.hub.onlineCount(),
     });
 
     socket.on("message", (raw: Buffer) => {
-      let type: string | undefined;
+      let parsed: { type?: string };
       try {
-        type = (JSON.parse(raw.toString("utf8")) as { type?: string }).type;
+        parsed = JSON.parse(raw.toString("utf8")) as { type?: string };
       } catch {
         return;
       }
 
-      if (type === WsEventType.ping) {
-        send(WsEventType.pong, { at: Date.now() });
+      switch (parsed.type) {
+        case WsEventType.ping:
+          send(WsEventType.pong, { at: Date.now() });
+          break;
+
+        // 打字中之类的瞬时状态：纯透传，不落库
+        case WsEventType.typing:
+          ctx.hub.broadcast(
+            {
+              type: WsEventType.typing,
+              payload: { deviceId: device.id, deviceName: device.name },
+            },
+            device.id,
+          );
+          break;
+
+        default:
+          break;
       }
     });
+  });
 
-    socket.on("close", () => {
-      request.log.info({ ip: request.ip }, "WebSocket 客户端已断开");
-    });
+  // ---------------------------------------------------------------- 错误兜底
+  app.setErrorHandler(async (error: FastifyError, request, reply) => {
+    request.log.error({ err: error }, "请求处理失败");
+
+    // SQLite 约束错误等不应把内部细节透给客户端
+    const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+
+    // 显式指定 JSON：若此前已被设成 application/octet-stream（如下载路由中途出错），
+    // Fastify 会因无法序列化对象而再抛 FST_ERR_REP_INVALID_PAYLOAD_TYPE，
+    // 把真实错误盖成另一个 500，排查时极具误导性。
+    await reply
+      .code(status)
+      .type("application/json")
+      .send({
+        error: status === 500 ? "internal_error" : (error.code ?? "request_failed"),
+        message: status === 500 ? "服务器内部错误" : error.message,
+      });
+  });
+
+  app.setNotFoundHandler(async (request, reply) => {
+    // API 路径返回结构化 404；其余交给 SPA（前端用 hash 路由，实际很少用到）
+    if (request.url.startsWith(ApiPath.info.split("/").slice(0, 3).join("/"))) {
+      return reply.code(404).send({ error: "not_found", path: request.url });
+    }
+    return reply.code(404).send({ error: "not_found", path: request.url });
+  });
+
+  // 暴露给 index.ts 做优雅退出
+  app.addHook("onClose", async () => {
+    ctx.store.close();
   });
 
   return app;
 }
+
+export { toMessageDto };
