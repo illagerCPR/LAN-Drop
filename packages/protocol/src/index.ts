@@ -28,6 +28,8 @@ export const ApiPath = {
 
 /** WebSocket 事件类型。 */
 export const WsEventType = {
+  /** 连接建立后的第一条服务端消息，告知身份与当前水位 */
+  hello: "hello",
   /** 新消息落库（文字或文件） */
   messageNew: "message.new",
   /** 消息被撤回/删除 */
@@ -39,6 +41,8 @@ export const WsEventType = {
   deviceOffline: "device.offline",
   /** 配对请求被批准 */
   pairApproved: "pair.approved",
+  /** 对端正在输入（瞬时状态，不落库） */
+  typing: "typing",
   /** 心跳 */
   ping: "ping",
   pong: "pong",
