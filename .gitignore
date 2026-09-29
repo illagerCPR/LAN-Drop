@@ -1,0 +1,55 @@
+# ---- 通用 ----
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+
+# ---- Node / pnpm ----
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.npm/
+
+# ---- 服务端运行时数据 ----
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# ---- Android / Gradle ----
+.gradle/
+local.properties
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+keystore.properties
+*.jks
+*.keystore
+
+# 保留 Gradle Wrapper 的 jar 与脚本（显式反忽略）
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+!gradlew
+!gradlew.bat
+
+# ---- IDE ----
+.idea/
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+
+# ---- 本地密钥 / 环境 ----
+.env
+.env.local
+*.pem
+*.p12
