@@ -13,8 +13,8 @@ import {
   ApiPath,
   PROTOCOL_VERSION,
   WsEventType,
-  type MessagePageDto,
   type ServerInfoDto,
+  type WsHelloPayload,
 } from "@lan-drop/protocol";
 
 import { resolveDevice } from "./auth.ts";
@@ -86,68 +86,71 @@ export function createApp(ctx: AppContext): FastifyInstance {
   registerFileRoutes(app, ctx);
 
   // ---------------------------------------------------------------- WebSocket
-  app.get(ApiPath.ws, { websocket: true }, (socket: WebSocket, request) => {
-    const device = resolveDevice(
-      ctx.store,
-      request.headers.authorization,
-      extractQueryToken(request.query),
-    );
+  //
+  // ⚠️ WS 路由必须注册在 fastifyWebsocket 的**子作用域**里（官方 README 同款写法）。
+  // 该插件的 onRoute 钩子只包装「本作用域及更深」的路由；若直接写在根实例上，
+  // Fastify 会把它当普通 GET 路由，handler 收到 (request, reply) 而非 (socket, request)
+  // ——socket 参数实际是 Request 对象，socket.close() 直接 TypeError，鉴权字段也全部读空。
+  app.register(async function websocketRoutes(instance) {
+    instance.get(ApiPath.ws, { websocket: true }, (socket: WebSocket, request) => {
+      const device = resolveDevice(
+        ctx.store,
+        request.headers.authorization,
+        extractQueryToken(request.query),
+      );
 
-    if (!device) {
-      socket.close(WS_CLOSE_UNAUTHORIZED, "unauthorized");
-      return;
-    }
-
-    ctx.hub.add(socket, device);
-    request.log.info({ device: device.name }, "WebSocket 已连接");
-
-    const send = (type: string, payload?: unknown): void => {
-      if (socket.readyState === WS_READY_OPEN) {
-        socket.send(JSON.stringify({ type, payload }));
-      }
-    };
-
-    // 连接即告知当前水位，客户端据此发现「离线期间错过了消息」
-    const page: MessagePageDto = {
-      items: [],
-      latestSeq: ctx.store.latestSeq(),
-      hasMore: false,
-    };
-    send(WsEventType.hello, {
-      deviceId: device.id,
-      serverId: ctx.serverId,
-      protocolVersion: PROTOCOL_VERSION,
-      latestSeq: page.latestSeq,
-      onlineCount: ctx.hub.onlineCount(),
-    });
-
-    socket.on("message", (raw: Buffer) => {
-      let parsed: { type?: string };
-      try {
-        parsed = JSON.parse(raw.toString("utf8")) as { type?: string };
-      } catch {
+      if (!device) {
+        socket.close(WS_CLOSE_UNAUTHORIZED, "unauthorized");
         return;
       }
 
-      switch (parsed.type) {
-        case WsEventType.ping:
-          send(WsEventType.pong, { at: Date.now() });
-          break;
+      ctx.hub.add(socket, device);
+      request.log.info({ device: device.name }, "WebSocket 已连接");
 
-        // 打字中之类的瞬时状态：纯透传，不落库
-        case WsEventType.typing:
-          ctx.hub.broadcast(
-            {
-              type: WsEventType.typing,
-              payload: { deviceId: device.id, deviceName: device.name },
-            },
-            device.id,
-          );
-          break;
+      const send = (type: string, payload?: unknown): void => {
+        if (socket.readyState === WS_READY_OPEN) {
+          socket.send(JSON.stringify({ type, payload }));
+        }
+      };
 
-        default:
-          break;
-      }
+      // 连接即告知当前水位，客户端据此发现「离线期间错过了消息」
+      const hello: WsHelloPayload = {
+        deviceId: device.id,
+        serverId: ctx.serverId,
+        protocolVersion: PROTOCOL_VERSION,
+        latestSeq: ctx.store.latestSeq(),
+        onlineCount: ctx.hub.onlineCount(),
+      };
+      send(WsEventType.hello, hello);
+
+      socket.on("message", (raw: Buffer) => {
+        let parsed: { type?: string };
+        try {
+          parsed = JSON.parse(raw.toString("utf8")) as { type?: string };
+        } catch {
+          return;
+        }
+
+        switch (parsed.type) {
+          case WsEventType.ping:
+            send(WsEventType.pong, { at: Date.now() });
+            break;
+
+          // 打字中之类的瞬时状态：纯透传，不落库
+          case WsEventType.typing:
+            ctx.hub.broadcast(
+              {
+                type: WsEventType.typing,
+                payload: { deviceId: device.id, deviceName: device.name },
+              },
+              device.id,
+            );
+            break;
+
+          default:
+            break;
+        }
+      });
     });
   });
 

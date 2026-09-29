@@ -7,7 +7,7 @@
  * 默认 baseUrl = http://127.0.0.1:8787
  *
  * 覆盖：元信息 → 配对 → 文字消息 → 增量拉取 → 分片上传（多片）→ 完整性校验
- *       → 完整下载 → Range 下载 → 鉴权拒绝路径。
+ *       → 完整下载 → Range 下载 → WebSocket 实时通道 → 鉴权拒绝路径。
  * 脚本必须在本机运行（配对码接口只对回环地址开放）。
  */
 
@@ -57,6 +57,73 @@ async function json(method, path, { token, body, headers = {} } = {}) {
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * 极简 WebSocket 测试客户端（Node 24 全局 WebSocket，undici 实现）。
+ * 缓存所有事件帧，waitFor(type) 可等到「未来到达」或「已到达」的事件。
+ */
+function wsOpen(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const events = [];
+    const waiters = [];
+    let opened = false;
+
+    ws.addEventListener("open", () => {
+      opened = true;
+      resolve(api);
+    });
+
+    ws.addEventListener("message", (event) => {
+      try {
+        const parsed = JSON.parse(String(event.data));
+        events.push(parsed);
+        const index = waiters.findIndex((w) => w.type === parsed.type);
+        if (index >= 0) {
+          const [entry] = waiters.splice(index, 1);
+          clearTimeout(entry.timer);
+          entry.resolve(parsed);
+        }
+      } catch {
+        // 非 JSON 帧忽略
+      }
+    });
+
+    ws.addEventListener("close", (event) => {
+      for (const entry of waiters.splice(0)) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error(`连接已关闭（code=${event.code}）`));
+      }
+    });
+
+    ws.addEventListener("error", () => {
+      if (!opened) reject(new Error("WebSocket 连接失败"));
+    });
+
+    const api = {
+      close: () => ws.close(),
+      send: (obj) => ws.send(JSON.stringify(obj)),
+      events: () => events,
+      waitFor(type, timeoutMs = 5000) {
+        const found = events.find((e) => e.type === type);
+        if (found) return Promise.resolve(found);
+        return new Promise((res, rej) => {
+          const entry = {
+            type,
+            resolve: res,
+            reject: rej,
+            timer: setTimeout(() => {
+              const index = waiters.indexOf(entry);
+              if (index >= 0) waiters.splice(index, 1);
+              rej(new Error(`等待事件 ${type} 超时（${timeoutMs}ms）`));
+            }, timeoutMs),
+          };
+          waiters.push(entry);
+        });
+      },
+    };
+  });
 }
 
 async function main() {
@@ -227,6 +294,47 @@ async function main() {
 
   const fileNoAuth = await fetch(`${baseUrl}/api/v1/files/${fileId}`);
   check(fileNoAuth.status === 401, "未授权下载文件被拒绝", `status=${fileNoAuth.status}`);
+
+  // ---------------------------------------------------------------- 6. WebSocket
+  console.log("\n[6] WebSocket 实时通道");
+  const wsBase = baseUrl.replace(/^http/, "ws");
+
+  // 未带 token：服务端完成升级后以 4401 关闭
+  const rejected = await new Promise((resolve) => {
+    const ws = new WebSocket(`${wsBase}/api/v1/ws`);
+    const timer = setTimeout(() => resolve({ code: "timeout" }), 5000);
+    ws.addEventListener("close", (event) => {
+      clearTimeout(timer);
+      resolve({ code: event.code });
+    });
+    ws.addEventListener("error", () => undefined);
+  });
+  check(rejected.code === 4401, "WS 未带 token 被拒绝（4401）", `code=${rejected.code}`);
+
+  // 有效 token：应收到 hello 握手，且 ping/pong 可用
+  const socket = await wsOpen(`${wsBase}/api/v1/ws?token=${encodeURIComponent(token)}`);
+  const hello = await socket.waitFor("hello");
+  check(hello?.payload?.protocolVersion === 1, "WS hello 携带协议版本");
+  check(
+    Number.isInteger(hello?.payload?.latestSeq) && Number.isInteger(hello?.payload?.onlineCount),
+    "WS hello 携带消息水位与在线数",
+    `latestSeq=${hello?.payload?.latestSeq} online=${hello?.payload?.onlineCount}`,
+  );
+
+  socket.send({ type: "ping" });
+  const pong = await socket.waitFor("pong");
+  check(typeof pong?.payload?.at === "number", "WS ping/pong 心跳正常");
+
+  // 实时广播：HTTP 发送一条消息，同一连接上应收到 message.new
+  const wsMarker = `WS 广播 ${Date.now()}`;
+  const wsSend = await json("POST", "/api/v1/messages", {
+    token,
+    body: { kind: "text", text: wsMarker },
+  });
+  check(wsSend.status === 200, "WS 阶段发送文字消息", `status=${wsSend.status}`);
+  const broadcast = await socket.waitFor("message.new");
+  check(broadcast?.payload?.text === wsMarker, "WS 收到 message.new 实时广播");
+  socket.close();
 
   // ---------------------------------------------------------------- 汇总
   console.log(`\n${"─".repeat(52)}`);
