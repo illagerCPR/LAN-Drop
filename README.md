@@ -60,21 +60,37 @@ LAN-Drop/
 
 ## 开发环境
 
-前置：WSL2（Ubuntu）/ Linux，Node.js ≥ 22，JDK 21。
+前置：WSL2（Ubuntu）/ Linux，Node.js ≥ 24，JDK 21。
 
 ```bash
 # 1) 用户级安装 Android SDK（无需 root，不使用 snap）
 bash scripts/install-android-sdk.sh
 
 # 2) 让手机能访问 WSL 中的服务端
-#    在 Windows 上以【管理员】身份运行 PowerShell：
-#    powershell -ExecutionPolicy Bypass -File scripts/windows-allow-lan.ps1
+#    在 Windows 上以【管理员】身份运行 PowerShell（会弹 UAC，只需一次）：
+#    powershell -ExecutionPolicy Bypass -File scripts\windows-allow-lan.ps1
+#    未执行此步时，只有 localhost 能访问，手机会超时（WSL 镜像模式下
+#    Hyper-V 防火墙默认拦截局域网入站，已实测确认）。
 
-# 3) 安装前端/服务端依赖
+# 3) 让当前 shell 拿到 JDK / Android SDK / Gradle 路径
+source scripts/dev-env.sh
+
+# 4) 安装依赖并启动服务端
 pnpm install
+pnpm dev            # 启动后控制台会打印「手机访问 http://<IP>:8787」
+
+# 5) 构建 Android 调试包（产物：android/app/build/outputs/apk/debug/app-debug.apk）
+cd android && ./gradlew :app:assembleDebug
 ```
 
-依赖源已固化到国内镜像（见 `.npmrc` 与 `android/settings.gradle.kts`）：npm 走 npmmirror，Maven 走阿里云 + Google 直连，Gradle 发行版走腾讯云镜像。
+依赖源已固化到国内镜像（见 `.npmrc`、`android/settings.gradle.kts`、
+`android/gradle/wrapper/gradle-wrapper.properties`）：npm 走 npmmirror，
+Maven 走 Google 直连 + 阿里云，Gradle 发行版走腾讯云镜像。
+
+Android 工具链版本已实测锁定（AGP 9.4.1 / Gradle 9.7.1 / Kotlin 编译器插件 2.2.10 /
+KSP 2.3.12 / compileSdk 37 / minSdk 33），**改动前请先读
+[docs/技术选型与开发计划.md](docs/技术选型与开发计划.md) §2.5**，那里记录了三条
+会直接导致构建失败的硬约束。
 
 ## 路线图
 

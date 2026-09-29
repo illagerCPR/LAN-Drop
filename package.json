@@ -1,0 +1,16 @@
+{
+  "name": "lan-drop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "局域网文件与文字传输工具，替代已下线的 Edge Drop",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "pnpm --filter @lan-drop/server dev",
+    "start": "pnpm --filter @lan-drop/server start",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

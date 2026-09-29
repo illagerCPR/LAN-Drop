@@ -1,0 +1,25 @@
+{
+  "name": "@lan-drop/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LAN-Drop 服务端：HTTP + WebSocket + SQLite + 文件流",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.5",
+    "@fastify/websocket": "^11.3.1",
+    "@lan-drop/protocol": "workspace:*",
+    "fastify": "^5.12.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "@types/ws": "^8.18.2",
+    "typescript": "^6.0.3",
+    "ws": "^8.22.0"
+  }
+}

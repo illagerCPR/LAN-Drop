@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>LAN-Drop</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f8f7;
+        --fg: #14181a;
+        --muted: #5c6a66;
+        --card: #ffffff;
+        --accent: #1b6c4b;
+        --border: #dfe6e3;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #101413;
+          --fg: #e8eeec;
+          --muted: #9aaba6;
+          --card: #1a201e;
+          --accent: #7fd1a8;
+          --border: #2a3431;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+        line-height: 1.6;
+      }
+      main { width: 100%; max-width: 30rem; }
+      h1 { margin: 0 0 4px; font-size: 1.6rem; letter-spacing: 0.01em; }
+      .sub { margin: 0 0 24px; color: var(--muted); font-size: 0.95rem; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px 20px;
+      }
+      .row { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0; font-size: 0.94rem; }
+      .row span:first-child { color: var(--muted); flex: none; }
+      .row span:last-child { text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
+      .status { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: var(--accent); }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+      .status.err { color: #c0453b; }
+      .note { margin-top: 18px; color: var(--muted); font-size: 0.85rem; }
+      code { font-size: 0.85em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>LAN-Drop</h1>
+      <p class="sub">局域网文件与文字传输 · 服务端已就绪</p>
+
+      <div class="card">
+        <div class="row">
+          <span>连接状态</span>
+          <span id="status" class="status"><i class="dot"></i><span id="status-text">检测中…</span></span>
+        </div>
+        <div class="row"><span>服务端</span><span id="server-name">—</span></div>
+        <div class="row"><span>服务端 ID</span><span id="server-id">—</span></div>
+        <div class="row"><span>协议版本</span><span id="protocol">—</span></div>
+        <div class="row"><span>需要配对</span><span id="pairing">—</span></div>
+      </div>
+
+      <p class="note" id="note">
+        这是 P0 阶段的连通性冒烟页：手机能看到这张卡片，就说明
+        <strong>局域网 → WSL 服务端</strong>的链路已经打通。
+        正式的聊天界面在 P1 接入。
+      </p>
+    </main>
+
+    <script>
+      const shortId = (id) => (typeof id === "string" && id.length > 12 ? id.slice(0, 8) + "…" : String(id));
+      const $ = (id) => document.getElementById(id);
+
+      function setStatus(ok, text) {
+        const el = $("status");
+        el.classList.toggle("err", !ok);
+        $("status-text").textContent = text;
+      }
+
+      async function load() {
+        try {
+          const res = await fetch("/api/v1/info", { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const info = await res.json();
+
+          $("server-name").textContent = info.serverName;
+          $("server-id").textContent = shortId(info.serverId);
+          $("protocol").textContent = "v" + info.protocolVersion;
+          $("pairing").textContent = info.pairingRequired ? "是" : "否";
+          setStatus(true, "正常");
+        } catch (err) {
+          setStatus(false, "失败：" + err.message);
+        }
+      }
+
+      load();
+    </script>
+  </body>
+</html>

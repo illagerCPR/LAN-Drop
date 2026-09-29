@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      界面完全由 Compose + Material 3 绘制，这里只需要一个无 ActionBar 的宿主主题。
+      状态栏/导航栏由 MainActivity 的 enableEdgeToEdge() 负责。
+    -->
+    <style name="Theme.LanDrop" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

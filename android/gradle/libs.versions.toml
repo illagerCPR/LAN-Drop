@@ -1,0 +1,51 @@
+# 版本目录：所有版本号集中管理，均已实查镜像可用性（2026-09-29）
+#
+# 关键约束（实测得出，非猜测）：
+#   * Compose BOM 2026.09 起，androidx.core / compose / okhttp-android 均要求 AGP ≥ 9.1.0
+#     且 compileSdk ≥ 37 —— 因此 AGP 8.x 路线不可行。
+#   * AGP 9.4.1 的 POM 显示其运行时依赖 kotlin-gradle-plugin 2.2.10，
+#     即「内置 Kotlin」使用的编译器就是 2.2.10；Kotlin 编译器插件版本必须与之对齐。
+#   * AGP 9.0 起 KSP 要求 ≥ 2.3.6；KSP 自 2.3.0 起与 Kotlin 版本解耦。
+[versions]
+agp = "9.4.1"
+# 必须等于 AGP 内置的 KGP 版本，否则编译器插件与编译器不匹配
+kotlin = "2.2.10"
+ksp = "2.3.12"
+
+coreKtx = "1.19.1"
+lifecycle = "2.9.4"
+activityCompose = "1.13.0"
+composeBom = "2026.09.00"
+room = "2.8.5"
+
+okhttp = "5.5.0"
+coroutines = "1.10.2"
+serializationJson = "1.9.0"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+# 注意：AGP 9 起不再使用 org.jetbrains.kotlin.android（内置 Kotlin 已取代它，
+# 且 kotlin-android 与新 DSL 不兼容）。下面两个是「Kotlin 编译器插件」，仍需显式应用。
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

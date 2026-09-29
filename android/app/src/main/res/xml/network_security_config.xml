@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  明文传输策略：LAN-Drop 首版按确认结论使用 HTTP + Token。
+  服务端地址由用户在运行时输入（任意局域网 IP），无法用固定 domain 列表覆盖，
+  因此这里放开明文；待 P4 引入自签 TLS + 指纹固定后收紧。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
