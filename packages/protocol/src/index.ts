@@ -137,6 +137,30 @@ export interface TransferProgressPayload {
   state: TransferState;
 }
 
+/** WS `hello` 事件负载：连接建立后的第一条服务端消息。 */
+export interface WsHelloPayload {
+  deviceId: string;
+  serverId: string;
+  protocolVersion: number;
+  /** 服务端当前最大 seq；客户端据此判断离线期间是否错过消息 */
+  latestSeq: number;
+  onlineCount: number;
+}
+
+/** WS 设备上线/下线事件负载（device.online / device.offline）。 */
+export interface DevicePresencePayload {
+  deviceId: string;
+  deviceName: string;
+  /** 仅 device.online 携带：广播时的在线连接数 */
+  onlineCount?: number;
+}
+
+/** WS `typing` 事件负载（瞬时状态，不落库）。 */
+export interface TypingPayload {
+  deviceId: string;
+  deviceName: string;
+}
+
 /** 配对请求。 */
 export interface PairRequest {
   /** 二维码或服务端控制台给出的一次性配对码 */
