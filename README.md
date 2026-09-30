@@ -433,11 +433,18 @@ Linux 是 `~/.local/share/lan-drop` 加 `~/.config/lan-drop/env`。
 两种形态各带真实授权的情形命令行造不出来，因此最后用**真实相册分享**做了端到端确认：
 只上传 1 条（`seq 87`），sha256 与之前一致。
 
-**已知问题（已定位，待修）**：分享 Intent 会成为本任务（task）的**基础 Intent**。
-`adb install -r` 这类强杀进程后任务被重新拉起时，系统会拿它重建 Activity，于是同一次分享被
-**重复投递**（实测出现过一次同文件重复上传）。正确解法是加一个不带界面的中转 Activity 专门接收
-分享（并重新委派 URI 授权），让分享 Intent 不再成为任务基础 Intent；**不要**用
-`savedInstanceState == null` 之类的判断去防——那会在任务带保存状态的重建里把合法分享丢掉。
+**已知问题 → 已修复（无界面中转 Activity）**：分享 Intent 曾由 MainActivity 直接接收，会成为任务的
+**基础 Intent**——强杀进程后任务重建时系统拿它重建根 Activity，同一次分享被**重放**（实测重复上传过）。
+现在 SEND/SEND_MULTIPLE 的 intent-filter 在无界面的 `ShareTrampolineActivity` 身上：中转解析分享、
+投进进程级收件箱（ShareInbox），再用**不带分享数据**的启动 Intent 拉起主界面并立即 finish——
+任务基础 Intent 永远干净，重放无从谈起；MainActivity 自身不再解析任何 Intent。
+（`savedInstanceState == null` 之类的防重复判断依然不要用——那会把任务带保存状态重建时的合法分享丢掉。）
+
+隐藏的坑是 **URI 读授权随 Activity 销毁吊销**：授权归接收它的 Activity 所有，中转一 finish 主界面就读不到
+源文件了。修法是把 URI 装进转发 Intent 的 `ClipData` 带 `FLAG_GRANT_READ_URI_PERMISSION` 转移。
+真机验证（V2301A）：热路径与冷启动分享各完整上传一张照片（540 KB / 546 KB）；
+杀进程后从最近任务重开，任务重建、**无重复上传**；`dumpsys activity recents` 里任务基础 Intent
+始终是干净的启动 Intent。
 
 ### 时间线图片缩略图（P4-3）
 

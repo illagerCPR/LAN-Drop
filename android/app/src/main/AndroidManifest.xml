@@ -35,12 +35,37 @@
             </intent-filter>
 
             <!--
-              系统分享面板（P4-2）：文字、单个文件、多个文件都能分享到 LAN-Drop。
-              launchMode 必须是 singleTop：应用已在栈顶时系统会走 onNewIntent，
+              launchMode 必须是 singleTop：应用已在栈顶时系统走 onNewIntent，
               而不是再叠一个 Activity 实例——叠两个会出现两套输入框抢着消费同一次分享。
-              mime 直接写 */*：分享面板里「出现」比「只对特定类型出现」重要，
-              类型不合规的内容由上传管线按实际 mime 处理。
+              注意 SEND/SEND_MULTIPLE 的 intent-filter 不在这里：分享 Intent 绝不能成为
+              本任务的基础 Intent，否则进程被强杀后任务重建会把同一次分享重放一遍
+              （实测重复上传）。分享由下面的无界面中转 Activity 接收。
             -->
+        </activity>
+
+        <!--
+          系统分享面板的无界面中转（P4-2）：文字、单个文件、多个文件都先到这里。
+          存在的意义只有一个——让分享 Intent 不成为 MainActivity 任务的基础 Intent
+          （进程被强杀后任务重建会拿基础 Intent 重建根 Activity，分享被重放 → 重复上传）。
+          中转解析后把内容投进进程级 ShareInbox，再拉起 MainActivity 并立即 finish；
+          转发 Intent 不带分享数据，即使冷启动时被存成任务基础 Intent 也重放不出分享。
+
+          配套约束：
+          - Theme.NoDisplay：本 Activity 永远不出界面，onCreate 里必须立即 finish；
+          - taskAffinity="" + excludeFromRecents：中转自身的短命任务瞬生瞬灭，
+            不进最近任务，也不与主任务产生任何任务关系；
+          - mime 直接写 */*：分享面板里「出现」比「只对特定类型出现」重要，
+            类型不合规的内容由上传管线按实际 mime 处理；
+          - URI 读授权由中转经转发 Intent 的 ClipData 随路转移给 MainActivity
+            （Activity 持有的授权随其销毁吊销，不转移文件就再也读不到）。
+        -->
+        <activity
+            android:name=".share.ShareTrampolineActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

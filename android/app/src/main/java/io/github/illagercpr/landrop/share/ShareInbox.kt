@@ -14,11 +14,11 @@ data class SharedPayload(
 )
 
 /**
- * 系统分享的「收件箱」：Activity 投递，界面消费。
+ * 系统分享的「收件箱」：无界面中转（[ShareTrampolineActivity]）投递，界面消费。
  *
- * 为什么不让 Activity 直接调 ViewModel：冷启动分享时 `onCreate` 里的 Intent 早于
- * Compose 首次组合与 ViewModel 建立，投进 StateFlow 才能让「先到的分享」等界面准备好
- * 再被取走；而且配置变更（旋转）会重建 Activity，收件箱在进程里，内容不会丢。
+ * 为什么不让界面直接调 ViewModel：中转是**先投递、再拉起 MainActivity**，冷启动分享时
+ * 内容早于 Compose 首次组合就位，「先到的分享」等界面准备好再被取走；而且配置变更
+ * （旋转）会重建 Activity，收件箱在进程里，内容不会丢。
  *
  * 消费是**取出即清空**（[consume]），否则重组会重复发送同一批文件。
  */

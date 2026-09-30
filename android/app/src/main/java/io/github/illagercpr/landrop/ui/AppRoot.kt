@@ -51,7 +51,8 @@ fun AppRoot() {
 
     val current = connection
 
-    // 系统分享的落点（P4-2）。放在根上而不是聊天页里：分享可能发生在还没配对的时候，
+    // 系统分享的落点（P4-2）。投递方是 ShareTrampolineActivity（无界面中转）；
+    // 放在根上而不是聊天页里：分享可能发生在还没配对的时候，
     // 那时聊天页根本没被组合，收件箱里的内容会一直没人取。
     val shared by ShareInbox.payload.collectAsStateWithLifecycle()
     LaunchedEffect(shared) {

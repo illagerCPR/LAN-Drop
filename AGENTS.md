@@ -87,7 +87,16 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
      两套输入框抢着消费同一次分享；
   2. **不要**用 `savedInstanceState == null` 判断「是不是新的分享投递」来防重复——
      任务带着保存状态重建时该判断为假，用户分享过来会毫无反应（比偶尔重复更糟，实测踩过）。
-     重复投递的正解是无界面中转 Activity（见 README 的已知问题）。
+     重复投递已用无界面中转 Activity 修掉（`share/ShareTrampolineActivity`）：SEND/SEND_MULTIPLE 的
+     intent-filter 在中转身上，中转解析后投进程级 ShareInbox，再以**不带分享数据**的启动 Intent
+     拉起 MainActivity 并立即 finish——分享内容绝不放进转发 Intent，否则冷启动时它又会成为任务
+     基础 Intent；MainActivity 自身的 Intent 没有任何人解析（`publishShare`/`onNewIntent` 已移除），
+     任务重建时重放什么都不会发生。
+- **URI 读授权归「接收它的 Activity」所有，随其销毁吊销**：中转拿到授权就 finish，必须把 URI 装进
+  转发 Intent 的 `ClipData` 带 `FLAG_GRANT_READ_URI_PERMISSION` 转移给 MainActivity（授权寿命仍是
+  本进程存续期）。漏了这步的现象是全体文件分享都「无法确定文件大小」。
+  验证「基础 Intent 已干净」读 `dumpsys activity recents` 里任务的 `intent={...}` 行即可，不必复现
+  杀进程重开；重复投递回归用「分享 → HOME → `am kill` → 最近任务点卡片重开」跑真实路径。
 - 分享落点在 `ui/AppRoot` 而不是聊天页：分享可能发生在**尚未配对**时，那时聊天页根本没被组合。
   未配对时文件不入队（那批 URI 反正留不住），只 Toast 提示先配对。
 - `share/ShareInbox` 是进程级收件箱，**消费必须取出即清空**（`getAndUpdate { null }`），
