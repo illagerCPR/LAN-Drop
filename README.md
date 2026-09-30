@@ -45,8 +45,9 @@ LAN-Drop/
 ├─ packages/
 │  └─ protocol/          协议单一事实源（TS 类型 + JSON Schema）
 ├─ android/              Kotlin + Jetpack Compose 客户端（独立 Gradle 构建）
+├─ packaging/            便携包的安装脚本与说明（windows/ 与 linux/）
 ├─ docs/                 技术选型、协议、路线图
-└─ scripts/              环境准备、Windows 防火墙、构建脚本
+└─ scripts/              环境准备、Windows 防火墙、出包与打包验收
 ```
 
 ## 技术栈
@@ -92,6 +93,11 @@ cd android && ./gradlew :app:testDebugUnitTest
 # 8) 无线调试部署（手机：开发者选项 → 无线调试）
 adb pair <手机IP>:<配对端口> <6 位配对码>
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+
+# 9) 出便携包（Windows zip / Linux tar.gz，产物在 dist/）
+pnpm package:all            # 默认先重建 web，再打服务端 bundle，最后组装两个平台包
+pnpm verify:package         # 验收 Linux 包：解压 → 用包内产物启动 → 跑 67 项 smoke
+node scripts/verify-package.mjs --target win   # 验收 Windows 包：真实 Windows 进程跑 smoke
 ```
 
 依赖源已固化到国内镜像（见 `.npmrc`、`android/settings.gradle.kts`、
@@ -109,11 +115,11 @@ KSP 2.3.12 / compileSdk 37 / minSdk 33），**改动前请先读
 - **P1** 服务端核心 + Web UI ✅（手机 ↔ PC 已实测互发文字与文件；大文件项以 ~180 MB 视频代替验收）
 - **P2** Android 原生客户端 MVP ✅（配对、时间线、文字、文件收发、Room 离线缓存）
 - **P3** 断点续传 ✅（暂停/继续/崩溃恢复）· 前台服务 + 通知 ✅（息屏续传）· UDP 自动发现 ✅（扫描配对 + 断线找回）· 自动接收文件 ✅（默认关）· 摄像头扫码、系统分享面板、缩略图
-- **P4** 便携打包（Windows/Linux，路线已定）· 系统分享面板 + 批量 · 时间线缩略图 · Web 暂停 UI · 消息保留策略 · 边界用例与可选 TLS
+- **P4** 便携打包 ✅（Windows zip / Linux tar.gz + systemd user unit）· 系统分享面板 + 批量 · 时间线缩略图 · Web 暂停 UI · 消息保留策略 · 边界用例与可选 TLS
 
 详见 [docs/技术选型与开发计划.md](docs/技术选型与开发计划.md)。
 
-## 当前进度：P1 / P2 / P3（前四项）均已在真机验收通过
+## 当前进度：P1 / P2 / P3（前四项）/ P4-1 均已验收通过
 
 ### 服务端展示名
 
@@ -291,6 +297,55 @@ WS 实时广播与指数退避重连（离线缺口由 `since=seq` 补拉）。
 | 开启后收到文件 | ✅ 自动下载完成，落盘 sha256 与源一致，走前台服务与通知 |
 | 基准点之前的历史文件 | ✅ 不被自动下载 |
 | 开关状态 | ✅ 落盘持久化，重启应用后保持 |
+
+## 便携打包与部署
+
+出包流水线（`scripts/package.mjs`）做三件事：重建前端 → esbuild 把服务端打成自包含单文件
+`server.js` → 组装各平台目录并压缩。**编译只发生在出包时**：仓库里开发照旧 `node src/index.ts`
+无编译直跑，目标机上也不需要 node_modules。
+
+| 平台 | 产物 | 运行时 | 自启 |
+| --- | --- | --- | --- |
+| Windows | `dist/lan-drop-<版本>-win-x64.zip`（33.8 MB，含 89 MB node.exe 压缩后） | 包内 `node/node.exe`，目标机不需要装 Node | 计划任务「登录时」+ 无窗口封装 |
+| Linux | `dist/lan-drop-<版本>-linux-x64.tar.gz`（0.4 MB） | 系统 Node ≥ 24（或自备 `node/node`） | systemd user unit |
+
+两端包内布局一致：
+
+```
+lan-drop-<版本>-<平台>-x64/
+├─ app/server/server.js   服务端单文件产物（全部依赖已内联，自包含检查在出包时强制）
+├─ app/web/dist/          浏览器界面
+├─ app/public/            前端未构建时的兜底冒烟页
+├─ node/                  Windows 包内置的 node.exe
+├─ VERSION                版本、commit、构建时间
+└─ README / install / start / stop / status / uninstall
+```
+
+**程序与数据分离**：升级 = 覆盖程序目录，数据与配置都在数据侧——Windows 是
+`%LOCALAPPDATA%\LAN-Drop`（配置 `lan-drop.env`、数据库、文件、日志同目录），
+Linux 是 `~/.local/share/lan-drop` 加 `~/.config/lan-drop/env`。
+
+- **Windows 三步部署**：解压 → 右键 `install.ps1`「以管理员身份运行」→ 手机 App 点
+  「扫描局域网」选中本机、输入配对码。安装脚本负责防火墙（TCP 8787 + UDP 8788，来源限本地子网）、
+  写配置、注册登录自启、启动并打印手机地址与配对码。刻意**不做 Windows 服务**（不引 nssm/WinSW）：
+  自启用任务计划程序，进程就是普通用户进程；日志落 `logs\server.log`，`status.cmd` 一眼看全状态。
+- **Linux 部署**：`./install.sh` 装成 systemd 用户服务（不需要 root）；要开机（未登录也）常驻，
+  再执行一次 `sudo loginctl enable-linger $USER`——这一步需要提权，脚本只提示、不代劳。
+
+**验收不信任「源码能跑」**：`scripts/verify-package.mjs` 解压真正的发布包、用包内产物启动，
+再对包内服务端跑完整的 67 项 smoke。除此之外它还专门盯住几件光看状态码发现不了的事：
+
+| 检查 | 为什么必须查 |
+| --- | --- |
+| 托管的是真前端产物而非兜底冒烟页 | 静态目录解析写错时两者都「能打开」，界面却不对 |
+| Linux 包可执行位、`sh -n`、`--dry-run` 生成的 unit 路径 | tar 丢权限位、模板替换写错都只在目标机暴露 |
+| Windows 包的 `.ps1` 过**真实 PowerShell 解析器** | 语法错（如 `[ordered]` 当参数类型）在 Linux 上根本看不出来 |
+| 防火墙 / 计划任务 cmdlet 参数存在性 | `-LocalPorts` 这类拼错的参数只在用户机器上装到最后一步才炸 |
+| Windows 包 `install.ps1` 试跑（`-NoFirewall -NoAutostart -NoStart`） | 「解析通过」不等于「能跑」：点源、StrictMode、中文输出编码、提权闸门都要真跑一次 |
+| Windows 包内置 `node.exe` 在**真实 Windows** 启动并跑同一套 smoke | 打包与真实运行时环境的差异只有真跑才暴露 |
+
+2026-09-30 实测结论：Linux 包与 Windows 包双双通过上述验收（各含 67 项 smoke）。
+防火墙规则与登录自启任务的**真实注册**未自动验证（会改动本机系统），留待目标机人工确认。
 
 ## 开发约定
 

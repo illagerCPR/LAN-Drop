@@ -17,6 +17,10 @@ pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev�
 node scripts/smoke-api.mjs  # 67 项端到端冒烟（HTTP + WS + 断点续传 + UDP 发现）；必须先起服务端，且必须本机跑（配对码仅回环可读）
 source scripts/dev-env.sh   # JAVA_HOME / ANDROID_HOME / PATH；非交互 shell 必须显式 source（~/.bashrc 会 early-return）
 cd android && ./gradlew :app:assembleDebug
+pnpm package:all            # 出便携包：dist/lan-drop-<版本>-{win-x64.zip,linux-x64.tar.gz}（默认先重建 web）
+pnpm verify:package         # 验收 Linux 包（解压真包 → 包内产物启动 → 67 项 smoke）
+node scripts/verify-package.mjs --target win   # 验收 Windows 包（真实 Windows 进程跑 smoke，经 WSL 互操作）
+pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查）；出包时缺 BOM 会直接失败
 ```
 
 - 验证顺序：服务端改动后**重启进程**再跑 smoke（静态根、数据目录在 boot 时确定）；`node --watch` 只热载 src。
@@ -39,6 +43,37 @@ cd android && ./gradlew :app:assembleDebug
 - 鉴权：`Authorization: Bearer <token>` 或 `?token=`（后者专给 `<img>`/`<a>` 下载用，它们带不了请求头）。配对码接口仅回环地址可调。
 - 数据根：Linux `~/.local/share/lan-drop`，Windows `%LOCALAPPDATA%\LAN-Drop`；env 覆盖项（`LAN_DROP_PORT` 等）见 `src/config.ts`。
 - 展示名 `config.serverName` 默认取 `os.hostname()`，可用 `LAN_DROP_SERVER_NAME` 覆盖。**不要再改回写死的「LAN-Drop 服务端」**：这个名字显示在手机聊天页标题与 Web 控制台标题上，那个位置唯一的职责是回答「我在跟哪台机器说话」，而「服务端」既是实现术语、多台 PC 时又全都同名。改完记得重启服务端（名字在 boot 时确定）。
+
+## 便携打包（P4-1）
+
+- 出包只走 `scripts/package.mjs`（`pnpm package:win|linux|all`）。仓库里服务端**永远**是
+  `node src/index.ts` 无编译直跑；esbuild 只在出包时把它打成自包含单文件。产物布局固定为
+  `app/server/server.js` + `app/web/dist`（+ `app/public` 兜底），与 `app.ts` 的
+  `resolveStaticRoot()` 候选顺序对齐——**改布局必须同时改那里的注释与候选顺序**。
+- **bundle 的 ESM 产物必须带 `createRequire` banner**（见 `package.mjs` 的 `banner`）。
+  fastify/avvio/ws 内部 `require("node:events")`，ESM 里没有 `require` 时 esbuild 的
+  `__require` 兜底直接抛 `Dynamic require of "..." is not supported`，表现为**启动即崩**。
+  删掉这个 banner 或把它挪出 banner（`__require` 初始化更早）都会复现。
+- **自包含检查用 esbuild metafile，不要改回正则扫产物文本**：ajv 把
+  `require("ajv/dist/runtime/uri").default` 当字符串字面量写进生成代码，文本扫描必然误报。
+  判定内建模块要同时认裸名（CJS 侧 `assert`）与 `node:` 前缀（ESM 侧 `node:assert`）。
+- Windows 包**不做 Windows 服务**（不引 nssm/WinSW）：自启 = 计划任务「登录时」调
+  `run-hidden.ps1`（Task Scheduler 没有隐藏窗口选项，直接起 node.exe 会留黑窗）。
+  配置写**数据目录**里的 `lan-drop.env`（不是程序目录），否则升级覆盖时用户配置会丢。
+  停止服务按「命令行含本包 `server.js` 路径」匹配进程——便携包可解压到任意路径。
+- Windows 侧文件约束：`.ps1` 必须 **UTF-8 with BOM**（出包时缺 BOM 直接拒绝出包；
+  用 `pnpm fix:ps1-bom` 补），`.cmd` 只写 **ASCII**（cmd.exe 在中文系统是 936 代码页，
+  中文会乱码），中文说明放 `README.txt`。`[ordered]` 不能当参数类型（整个脚本解析失败），
+  用 `[System.Collections.IDictionary]`。
+- `node.exe` 从 npmmirror 拉、校验 `SHASUMS256.txt`、缓存在 `build/cache/`；版本固定在
+  `package.mjs` 的 `BUNDLED_NODE_VERSION`，升它要顺带更新 `VERSION` 说明。
+- 验收走 `scripts/verify-package.mjs`：解压**真包**→包内产物启动→67 项 smoke，并额外检查
+  前端产物被托管（不是兜底冒烟页）、Linux 可执行位/`sh -n`/unit 路径、Windows 包 `.ps1`
+  过真实 PowerShell 解析器、win 包 `node.exe` 在真实 Windows 上启动。**防火墙规则与
+  登录自启任务的真实注册不在自动化范围内**（会改动本机系统），改动 install 脚本后要人工确认。
+- WSL 互操作细节：`powershell.exe` 从 Node 调用时中文输出是 GBK，脚本里先设
+  `[Console]::OutputEncoding = [Text.Encoding]::UTF8`；`Start-Process`/`*>` 重定向**不会**
+  创建目录，日志目录要先建好，否则现象是「服务端一行日志都没有」。
 
 ## Web（apps/web）
 
@@ -105,5 +140,5 @@ cd android && ./gradlew :app:assembleDebug
 - 提交与 tag 一律 GPG 签名（指纹 `D2E7DBACB6E233780954B2DEF09BEB5215872019`，无口令，可静默签）；推送必须用 GitHub 隐私邮箱 `63698328+illagerCPR@users.noreply.github.com`。
 - 源码标识符全英文，禁拼音。
 - 每完成一项功能同步更新 `README.md` 与 `docs/技术选型与开发计划.md`，文档与实现脱节视为未完成。
-- `scripts/windows-allow-lan.ps1` 必须保持 **UTF-8 with BOM**：PS 5.1 对无 BOM 文件按 ANSI/GBK 解码，中文字符串会破坏语法；也不要手工另存为 ANSI（依赖系统区域设置）。
+- `scripts/windows-allow-lan.ps1` 必须保持 **UTF-8 with BOM**：PS 5.1 对无 BOM 文件按 ANSI/GBK 解码，中文字符串会破坏语法；也不要手工另存为 ANSI（依赖系统区域设置）。`packaging/windows/*.ps1` 同样是硬要求：出包脚本遇到缺 BOM 直接拒绝出包，用 `pnpm fix:ps1-bom` 补齐（`--check` 只检查）。
 - 需要 sudo 提权时找用户执行；**不准使用 snap 安装**。

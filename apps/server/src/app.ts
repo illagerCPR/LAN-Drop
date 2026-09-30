@@ -26,8 +26,34 @@ import { registerMessageRoutes } from "./routes/messages.ts";
 import { registerPairRoutes } from "./routes/pair.ts";
 
 const serverRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const webDistDir = join(serverRoot, "..", "web", "dist");
 const fallbackPublicDir = join(serverRoot, "public");
+
+/**
+ * 定位静态资源根目录，取第一个含 `index.html` 的候选。
+ *
+ *   1. `LAN_DROP_WEB_ROOT` 显式指定（排查/自定义部署用）；
+ *   2. `serverRoot/web/dist` —— 便携包布局（`app/server/server.js` + `app/web/dist`）；
+ *   3. `serverRoot/../web/dist` —— 仓库开发布局（`apps/server/src` + `apps/web/dist`）；
+ *   4. `serverRoot/public` —— P0 连通性冒烟页（前端未构建时的兜底）。
+ *
+ * 不能写死「入口文件上一层再 `../web/dist`」：esbuild 出包后入口是 `app/server/server.js`，
+ * 与源码树层级不同，写死会让便携包找不到 `web/dist` 而**静默**退回冒烟页
+ * （页面能打开但没有聊天界面，极难排查）。
+ */
+function resolveStaticRoot(): string {
+  const override = process.env["LAN_DROP_WEB_ROOT"]?.trim();
+  const candidates = [
+    ...(override ? [override] : []),
+    join(serverRoot, "web", "dist"),
+    join(serverRoot, "..", "web", "dist"),
+    fallbackPublicDir,
+  ];
+
+  for (const dir of candidates) {
+    if (existsSync(join(dir, "index.html"))) return dir;
+  }
+  return fallbackPublicDir;
+}
 
 /** ws 的 readyState 常量。 */
 const WS_READY_OPEN = 1;
@@ -61,7 +87,7 @@ export function createApp(ctx: AppContext): FastifyInstance {
   app.register(fastifyWebsocket);
 
   // 优先托管前端构建产物；未构建时退回 P0 的连通性冒烟页，方便环境排查。
-  const staticRoot = existsSync(join(webDistDir, "index.html")) ? webDistDir : fallbackPublicDir;
+  const staticRoot = resolveStaticRoot();
   app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
   app.log.info({ staticRoot }, "静态资源目录");
 
