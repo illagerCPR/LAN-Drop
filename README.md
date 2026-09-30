@@ -168,7 +168,7 @@ TS 侧另有 26 项单测：`pnpm -r test`（15 项链接规则 + 11 项上传�
 
 `cd android && ./gradlew :app:testDebugUnitTest` 另有 96 项 JVM 单测（无需设备与服务端）：
 16 项协议一致性（拿服务端真实响应样本验证 Kotlin 侧模型，防两端协议漂移）+
-4 项 WS 事件信封解析（`message.deleted` / `messages.purged` / 未知类型与坏 JSON 拒绝）+
+6 项 WS 事件信封解析（`message.new` 真实样本、`message.deleted` / `messages.purged` 解析为对应事件，缺 payload、未知类型与坏 JSON 拒绝）+
 17 项通知逻辑（多任务进度合并、主动暂停与网络中断的提醒判据、速率平滑与回退重置）+
 6 项发现应答解析（非本服务 / 未来版本 / 坏报文一律拒绝）+
 18 项分享内容归一化（按媒体条目身份去重、`ClipData` 兜底、`data` 兜底、空白与非分享 action）+
