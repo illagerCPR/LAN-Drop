@@ -183,6 +183,41 @@ data class ApiErrorDto(
     @SerialName("max") val max: Long? = null,
 )
 
+/** 上传会话在服务端的状态（客户端只读）。 */
+object UploadState {
+    const val OPEN = "open"
+    const val COMPLETED = "completed"
+    const val ABORTED = "aborted"
+}
+
+/**
+ * 上传会话的可续传视图，对应 `GET /api/v1/uploads/:id`。
+ *
+ * 进程被杀后本地只剩一个 `uploadId`，必须回来问服务端「你到底收了多少字节」，
+ * [receivedBytes] 就是续传锚点。
+ */
+@Serializable
+data class UploadStatusDto(
+    @SerialName("uploadId") val uploadId: String,
+    @SerialName("name") val name: String,
+    @SerialName("size") val size: Long,
+    @SerialName("mime") val mime: String? = null,
+    @SerialName("receivedBytes") val receivedBytes: Long,
+    @SerialName("state") val state: String,
+    /** 服务端认为还能继续追加（open 且未收满） */
+    @SerialName("resumable") val resumable: Boolean = false,
+    /** 建议分片大小；续传时照此切片 */
+    @SerialName("chunkSize") val chunkSize: Long = 4L * 1024 * 1024,
+    @SerialName("createdAt") val createdAt: Long = 0,
+    @SerialName("updatedAt") val updatedAt: Long = 0,
+)
+
+/** 上传会话列表，对应 `GET /api/v1/uploads`。 */
+@Serializable
+data class UploadListDto(
+    @SerialName("items") val items: List<UploadStatusDto> = emptyList(),
+)
+
 // ------------------------------------------------------------------ WebSocket
 
 /** WebSocket 事件信封。`type` 决定 `payload` 的具体类型。 */

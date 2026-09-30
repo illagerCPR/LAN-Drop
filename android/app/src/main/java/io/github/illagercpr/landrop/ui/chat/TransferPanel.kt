@@ -32,10 +32,12 @@ import io.github.illagercpr.landrop.ui.common.formatBytes
 import io.github.illagercpr.landrop.ui.common.formatTimestamp
 import io.github.illagercpr.landrop.ui.common.progressFraction
 
-/** 传输记录页：上传/下载的完整流水，进行中的可取消，完成的下载可打开。 */
+/** 传输记录页：上传/下载的完整流水，进行中的可暂停/取消，暂停的可继续，完成的下载可打开。 */
 @Composable
 fun TransferPanel(
     transfers: List<TransferEntity>,
+    onPause: (String) -> Unit,
+    onResume: (String) -> Unit,
     onCancel: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -63,16 +65,24 @@ fun TransferPanel(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(transfers, key = { it.id }) { transfer ->
-            TransferCard(transfer, onCancel)
+            TransferCard(transfer, onPause, onResume, onCancel)
         }
     }
 }
 
 @Composable
-private fun TransferCard(transfer: TransferEntity, onCancel: (String) -> Unit) {
+private fun TransferCard(
+    transfer: TransferEntity,
+    onPause: (String) -> Unit,
+    onResume: (String) -> Unit,
+    onCancel: (String) -> Unit,
+) {
     val context = LocalContext.current
     val uploading = transfer.direction == TransferDirection.UPLOAD
     val fraction = progressFraction(transfer.transferredBytes, transfer.totalBytes)
+    val active = transfer.state == TransferState.RUNNING || transfer.state == TransferState.QUEUED
+    // 暂停也画进度条：让「已传了多少被保住了」可见，这正是续传的价值所在
+    val showProgress = active || transfer.state == TransferState.PAUSED
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -96,12 +106,12 @@ private fun TransferCard(transfer: TransferEntity, onCancel: (String) -> Unit) {
 
             Text(
                 text = "${formatBytes(transfer.transferredBytes)} / ${formatBytes(transfer.totalBytes)}" +
-                    " · ${stateLabel(transfer.state)} · ${formatTimestamp(transfer.updatedAt)}",
+                    " · ${stateLabel(transfer)} · ${formatTimestamp(transfer.updatedAt)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            if (transfer.state == TransferState.RUNNING || transfer.state == TransferState.QUEUED) {
+            if (showProgress) {
                 Spacer(Modifier.height(6.dp))
                 if (fraction != null) {
                     LinearProgressIndicator(
@@ -118,12 +128,30 @@ private fun TransferCard(transfer: TransferEntity, onCancel: (String) -> Unit) {
                 Text(
                     text = message,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = if (transfer.state == TransferState.PAUSED) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
                 )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (transfer.state == TransferState.RUNNING || transfer.state == TransferState.QUEUED) {
+                if (active) {
+                    TextButton(onClick = { onPause(transfer.id) }) { Text("暂停") }
+                }
+
+                if (transfer.state == TransferState.PAUSED ||
+                    transfer.state == TransferState.FAILED
+                ) {
+                    // 失败也允许重试：续传的现场（源文件/半成品 + 服务端会话）大多还在，
+                    // 重试往往是从断点接着传，而不是从头再来。
+                    TextButton(onClick = { onResume(transfer.id) }) {
+                        Text(if (transfer.state == TransferState.FAILED) "重试" else "继续")
+                    }
+                }
+
+                if (active || transfer.state == TransferState.PAUSED) {
                     TextButton(onClick = { onCancel(transfer.id) }) { Text("取消") }
                 }
 
@@ -150,12 +178,13 @@ private fun TransferCard(transfer: TransferEntity, onCancel: (String) -> Unit) {
     }
 }
 
-private fun stateLabel(state: String): String = when (state) {
+private fun stateLabel(transfer: TransferEntity): String = when (transfer.state) {
     TransferState.QUEUED -> "排队中"
     TransferState.RUNNING -> "进行中"
-    TransferState.PAUSED -> "已暂停"
+    // 进度可续时才说「可继续」，0 字节的暂停其实就是等着重来
+    TransferState.PAUSED -> if (transfer.transferredBytes > 0) "已暂停 · 可继续" else "已暂停"
     TransferState.COMPLETED -> "已完成"
     TransferState.FAILED -> "失败"
     TransferState.CANCELED -> "已取消"
-    else -> state
+    else -> transfer.state
 }

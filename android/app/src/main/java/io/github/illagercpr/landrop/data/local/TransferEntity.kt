@@ -24,7 +24,10 @@ object TransferState {
 /**
  * 传输记录（客户端本地缓存，用于「传输记录」页与断点续传恢复）。
  *
- * `transferredBytes` 是续传的锚点：进程被杀后凭它 + 服务端上传会话重新对齐 offset。
+ * 断点续传靠这三个字段撑着，缺一不可：
+ *   - [localUri]：上传时是 SAF 源文件，下载时是 MediaStore 目标文件；
+ *   - [transferredBytes]：本地认为的进度，恢复时还要与文件真实长度取小；
+ *   - [uploadId] / [remoteFileId]：服务端那一半的句柄，凭它回去问权威进度。
  */
 @Entity(
     tableName = "transfers",
@@ -41,10 +44,12 @@ data class TransferEntity(
     @ColumnInfo(name = "total_bytes") val totalBytes: Long,
     @ColumnInfo(name = "transferred_bytes") val transferredBytes: Long,
     val state: String,
-    /** 落盘后的本地 URI（下载完成时写入） */
+    /** 本地文件 URI：上传方向为 SAF 源文件，下载方向为 MediaStore 目标文件 */
     @ColumnInfo(name = "local_uri") val localUri: String?,
     /** 服务端上传会话 ID（上传方向使用） */
     @ColumnInfo(name = "upload_id") val uploadId: String?,
+    /** 服务端文件 ID（下载方向使用，续传时要靠它重新发起 Range 请求） */
+    @ColumnInfo(name = "remote_file_id") val remoteFileId: String? = null,
     val error: String?,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )

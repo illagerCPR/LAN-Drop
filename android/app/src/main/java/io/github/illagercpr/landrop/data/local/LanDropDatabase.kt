@@ -10,10 +10,14 @@ import androidx.room.RoomDatabase
  *
  * 这是纯缓存（服务端才是权威账本），因此允许破坏性迁移——
  * 需要长期保留的数据是「已下载到本地的文件」，它们不在库里。
+ *
+ * v2：transfers 增加 `remote_file_id`（下载方向断点续传要靠它重新发起 Range 请求）。
+ * 破坏性迁移会丢掉传输记录，代价只是「升级 App 时正在传的任务无法续传」，
+ * 源文件仍在手机上，重新发起即可。
  */
 @Database(
     entities = [MessageEntity::class, TransferEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class LanDropDatabase : RoomDatabase() {

@@ -10,10 +10,12 @@ import {
   ApiPath,
   WsEventType,
   type CreateUploadResponse,
+  type UploadListDto,
+  type UploadStatusDto,
 } from "@lan-drop/protocol";
 
 import type { AppContext } from "../context.ts";
-import { toMessageDto } from "../dto.ts";
+import { toMessageDto, toUploadStatusDto } from "../dto.ts";
 import {
   appendStreamToFile,
   contentDisposition,
@@ -25,6 +27,7 @@ import {
   removeFileQuietly,
   sanitizeFileName,
   sha256File,
+  truncateTo,
 } from "../storage.ts";
 import { createAuthHook } from "./pair.ts";
 
@@ -33,6 +36,9 @@ const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /** 单文件大小上限，防止手滑或恶意请求把磁盘写满。 */
 const MAX_FILE_SIZE = 100 * 1024 * 1024 * 1024; // 100 GiB
+
+/** 一次最多列出多少条上传会话。 */
+const MAX_UPLOAD_LIST = 100;
 
 export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void {
   const authHook = createAuthHook(ctx);
@@ -84,6 +90,48 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
     },
   );
 
+  // ---------------------------------------------------------------- 查询上传会话
+  //
+  // 断点续传的服务端一半：客户端进程被杀后本地只剩一个 uploadId，必须回来问
+  // 「你收了多少字节」。这两个接口都是只读的，且都按设备隔离。
+  app.get<{ Querystring: { state?: string; limit?: string } }>(
+    ApiPath.uploads,
+    { preHandler: authHook },
+    async (request): Promise<UploadListDto> => {
+      const device = request.device!;
+      const requested = request.query.state;
+      const state =
+        requested === "open" || requested === "completed" || requested === "aborted"
+          ? requested
+          : null;
+
+      const items = ctx.store
+        .listUploadsByDevice(device.id, state, MAX_UPLOAD_LIST)
+        .map((upload) => toUploadStatusDto(upload, CHUNK_SIZE));
+
+      return { items };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    `${ApiPath.uploads}/:id`,
+    { preHandler: authHook },
+    async (request, reply) => {
+      const device = request.device!;
+      const upload = ctx.store.findUpload(request.params.id);
+
+      if (!upload) {
+        return reply.code(404).send({ error: "upload_not_found" });
+      }
+      if (upload.deviceId !== device.id) {
+        return reply.code(403).send({ error: "not_upload_owner" });
+      }
+
+      const status: UploadStatusDto = toUploadStatusDto(upload, CHUNK_SIZE);
+      return status;
+    },
+  );
+
   // ---------------------------------------------------------------- 分片续传
   //
   // 语义是「追加写」而非「随机写」：服务端只接受 offset 恰好等于已收字节数的分片。
@@ -126,6 +174,10 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
       if (!body || typeof body.pipe !== "function") {
         return reply.code(415).send({ error: "expected_octet_stream_body" });
       }
+
+      // 丢掉上一次中途断流留下的残字节，保证「开始追加时文件长度 = 本片 offset」。
+      // 没有这一步，断点续传会把新数据接在残字节后面，静默写坏文件。
+      await truncateTo(upload.tempPath, upload.receivedBytes);
 
       const result = await appendStreamToFile(body, upload.tempPath, remaining);
 

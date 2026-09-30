@@ -158,7 +158,12 @@ fun ChatScreen(
     ) { innerPadding ->
         Box(modifier = Modifier.padding(innerPadding)) {
             if (showTransfers) {
-                TransferPanel(transfers = transfers, onCancel = viewModel::cancelTransfer)
+                TransferPanel(
+                    transfers = transfers,
+                    onPause = viewModel::pauseTransfer,
+                    onResume = viewModel::resumeTransfer,
+                    onCancel = viewModel::cancelTransfer,
+                )
             } else {
                 Timeline(
                     timeline = timeline,

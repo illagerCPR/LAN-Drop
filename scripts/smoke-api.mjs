@@ -7,11 +7,13 @@
  * 默认 baseUrl = http://127.0.0.1:8787
  *
  * 覆盖：元信息 → 配对 → 文字消息 → 增量拉取 → 分片上传（多片）→ 完整性校验
- *       → 完整下载 → Range 下载 → WebSocket 实时通道 → 鉴权拒绝路径。
+ *       → 完整下载 → Range 下载 → 断点续传（含中途断流的残字节）→ WebSocket
+ *       实时通道 → 鉴权拒绝路径。
  * 脚本必须在本机运行（配对码接口只对回环地址开放）。
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import net from "node:net";
 
 const baseUrl = process.argv[2] ?? "http://127.0.0.1:8787";
 
@@ -57,6 +59,51 @@ async function json(method, path, { token, body, headers = {} } = {}) {
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * 发一个「头部声明完整、实际中途掐断」的 PATCH，用来制造服务端 `.part` 里的残字节。
+ *
+ * 这是断点续传最阴的失效模式：客户端/网络中途死掉时，服务端已经把收到的部分
+ * 写进了临时文件，但数据库的 received_bytes 停在这一片之前。两者一旦不一致，
+ * 下次从权威 offset 续传就会把新数据接在残字节后面，静默写坏文件——而且要到
+ * 全部传完校验 sha256 时才发现（100 GB 的文件就是白传一遍）。
+ *
+ * 用裸 TCP 而非 fetch：需要精确控制「发多少之后掐断」，fetch 会等整个 body。
+ */
+function abortMidPatch(token, uploadId, offset, declaredBytes) {
+  const { hostname, port } = new URL(baseUrl);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    const socket = net.connect(Number(port), hostname, () => {
+      socket.write(
+        `PATCH /api/v1/uploads/${uploadId}?offset=${offset} HTTP/1.1\r\n` +
+          `Host: ${hostname}:${port}\r\n` +
+          `Authorization: Bearer ${token}\r\n` +
+          `Content-Type: application/octet-stream\r\n` +
+          `Content-Length: ${declaredBytes}\r\n` +
+          `Connection: close\r\n\r\n`,
+      );
+      // 只发一半：服务端必然已落一部分盘，却永远等不到剩下的
+      socket.write(randomBytes(Math.floor(declaredBytes / 2)));
+      setTimeout(() => socket.destroy(), 80);
+    });
+
+    socket.on("error", () => undefined);
+    // 连接关闭后再留一段时间，等服务端把这次异常断流处理干净再进入断言
+    socket.on("close", () => setTimeout(done, 300));
+    setTimeout(() => {
+      socket.destroy();
+      done();
+    }, 3000);
+  });
 }
 
 /**
@@ -295,8 +342,110 @@ async function main() {
   const fileNoAuth = await fetch(`${baseUrl}/api/v1/files/${fileId}`);
   check(fileNoAuth.status === 401, "未授权下载文件被拒绝", `status=${fileNoAuth.status}`);
 
-  // ---------------------------------------------------------------- 6. WebSocket
-  console.log("\n[6] WebSocket 实时通道");
+  // ---------------------------------------------------------------- 6. 断点续传
+  console.log("\n[6] 断点续传（暂停 / 恢复 / 断流残字节）");
+
+  const resumablePayload = randomBytes(3 * 1024 * 1024 + 777);
+  const resumableDigest = sha256(resumablePayload);
+  const resumeName = "断点续传样本.bin";
+  const FIRST_CHUNK = 2 * 1024 * 1024;
+
+  const resumeCreate = await json("POST", "/api/v1/uploads", {
+    token,
+    body: {
+      name: resumeName,
+      size: resumablePayload.length,
+      mime: "application/octet-stream",
+      sha256: resumableDigest,
+    },
+  });
+  check(resumeCreate.status === 200, "创建续传会话", `status=${resumeCreate.status}`);
+  const resumeId = resumeCreate.body?.uploadId;
+
+  // 正常发第一片（相当于「暂停」时的状态：服务端留在 open，临时文件留在磁盘）
+  const firstPatch = await fetch(`${baseUrl}/api/v1/uploads/${resumeId}?offset=0`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+    body: resumablePayload.subarray(0, FIRST_CHUNK),
+  });
+  const firstBody = await firstPatch.json();
+  check(
+    firstPatch.status === 200 && firstBody.receivedBytes === FIRST_CHUNK,
+    "发出第一片",
+    `receivedBytes=${firstBody.receivedBytes}`,
+  );
+
+  // 「进程被杀后回来问服务端收了多少」——这是断点续传能成立的全部依据
+  const statusOne = await json("GET", `/api/v1/uploads/${resumeId}`, { token });
+  check(statusOne.status === 200, "GET /uploads/:id 可读会话状态", `status=${statusOne.status}`);
+  check(statusOne.body?.receivedBytes === FIRST_CHUNK, "回传权威续传锚点",
+    `receivedBytes=${statusOne.body?.receivedBytes}`);
+  check(statusOne.body?.state === "open", "暂停期间会话保持 open", `state=${statusOne.body?.state}`);
+  check(statusOne.body?.resumable === true, "resumable 为 true（未收满）");
+  check(statusOne.body?.size === resumablePayload.length, "回传声明大小");
+  check(statusOne.body?.tempPath === undefined, "不泄露服务端临时路径");
+
+  const openList = await json("GET", "/api/v1/uploads?state=open", { token });
+  check(openList.status === 200, "GET /uploads 可列未完成会话", `status=${openList.status}`);
+  check(
+    Array.isArray(openList.body?.items) && openList.body.items.some((it) => it.uploadId === resumeId),
+    "未完成会话出现在列表里",
+    `共 ${openList.body?.items?.length} 条`,
+  );
+
+  // —— 关键用例：制造「服务端 .part 比 received_bytes 长」的残字节 ——
+  // 声明一个 1 MiB 的完整分片，实际只发一半就掐断连接。服务端会把已读到的
+  // 字节落盘，但收不到完整 body，于是 pipeline 报错、receivedBytes 不推进。
+  await abortMidPatch(token, resumeId, FIRST_CHUNK, 1024 * 1024);
+
+  const statusAfterAbort = await json("GET", `/api/v1/uploads/${resumeId}`, { token });
+  check(
+    statusAfterAbort.body?.receivedBytes === FIRST_CHUNK,
+    "中途断流后权威进度不推进（残字节不进账）",
+    `receivedBytes=${statusAfterAbort.body?.receivedBytes}`,
+  );
+
+  // 从权威 offset 续传剩余部分，然后收尾。
+  // 若服务端没把残字节截掉，新数据会追加在残字节之后 → 文件变长 → sha256 不符。
+  const restPatch = await fetch(`${baseUrl}/api/v1/uploads/${resumeId}?offset=${FIRST_CHUNK}`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+    body: resumablePayload.subarray(FIRST_CHUNK),
+  });
+  const restBody = await restPatch.json();
+  check(
+    restPatch.status === 200 && restBody.receivedBytes === resumablePayload.length,
+    "从权威 offset 续传剩余部分",
+    `status=${restPatch.status} receivedBytes=${restBody.receivedBytes}`,
+  );
+
+  const resumeComplete = await json("POST", `/api/v1/uploads/${resumeId}/complete`, { token });
+  check(resumeComplete.status === 200, "续传后收尾成功（sha256 通过 → 残字节已被截断）",
+    `status=${resumeComplete.status} ${resumeComplete.status !== 200 ? JSON.stringify(resumeComplete.body) : ""}`);
+
+  if (resumeComplete.status === 200) {
+    const resumed = await fetch(
+      `${baseUrl}/api/v1/files/${resumeComplete.body.file.id}?token=${encodeURIComponent(token)}`,
+    );
+    const resumedBytes = Buffer.from(await resumed.arrayBuffer());
+    check(resumedBytes.length === resumablePayload.length, "续传结果大小与源一致",
+      `${resumedBytes.length} vs ${resumablePayload.length}`);
+    check(sha256(resumedBytes) === resumableDigest, "续传结果 sha256 与源逐字节一致");
+  }
+
+  const statusDone = await json("GET", `/api/v1/uploads/${resumeId}`, { token });
+  check(statusDone.body?.state === "completed", "完成后状态为 completed",
+    `state=${statusDone.body?.state}`);
+  check(statusDone.body?.resumable === false, "完成后 resumable 为 false");
+
+  const uploadNoAuth = await fetch(`${baseUrl}/api/v1/uploads/${resumeId}`);
+  check(uploadNoAuth.status === 401, "未授权查询上传会话被拒绝", `status=${uploadNoAuth.status}`);
+
+  const uploadMissing = await json("GET", "/api/v1/uploads/does-not-exist", { token });
+  check(uploadMissing.status === 404, "查询不存在的会话返回 404", `status=${uploadMissing.status}`);
+
+  // ---------------------------------------------------------------- 7. WebSocket
+  console.log("\n[7] WebSocket 实时通道");
   const wsBase = baseUrl.replace(/^http/, "ws");
 
   // 未带 token：服务端完成升级后以 4401 关闭

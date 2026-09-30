@@ -7,7 +7,10 @@
  *   路由层负责在两者之间做映射，绝不把内部记录直接当响应体返回。
  */
 
-import type { MessageKind } from "@lan-drop/protocol";
+import type { MessageKind, UploadState } from "@lan-drop/protocol";
+
+/** 上传会话状态就是协议里那个（这里转出去，内部代码不必再引协议包）。 */
+export type { UploadState };
 
 export interface DeviceRow {
   id: string;
@@ -49,9 +52,6 @@ export interface MessageRecord {
     sha256: string | null;
   } | null;
 }
-
-/** 上传会话状态。 */
-export type UploadState = "open" | "completed" | "aborted";
 
 export interface UploadRecord {
   id: string;

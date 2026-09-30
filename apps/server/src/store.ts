@@ -8,6 +8,7 @@ import type {
   FileRecord,
   MessageRecord,
   UploadRecord,
+  UploadState,
 } from "./types.ts";
 import type { MessageKind } from "@lan-drop/protocol";
 
@@ -389,6 +390,27 @@ export class Store {
       Date.now(),
       id,
     );
+  }
+
+  /**
+   * 列出某设备的上传会话。
+   *
+   * 只按设备过滤、不跨设备——上传会话里带文件名，A 设备没有理由看到 B 设备
+   * 正在传什么。
+   */
+  listUploadsByDevice(deviceId: string, state: UploadState | null, limit: number): UploadRecord[] {
+    const sql = `SELECT id, device_id, name, size, mime, sha256, temp_path, received_bytes,
+                        state, created_at, updated_at
+                 FROM uploads
+                 WHERE device_id = ?${state ? " AND state = ?" : ""}
+                 ORDER BY updated_at DESC
+                 LIMIT ?`;
+
+    const rows = this.#stmt(sql).all(
+      ...(state ? [deviceId, state, limit] : [deviceId, limit]),
+    ) as Record<string, unknown>[];
+
+    return rows.map(mapUpload);
   }
 
   /** 清理超时未完成的上传会话，返回被清理的临时文件路径。 */

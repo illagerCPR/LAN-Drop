@@ -1,9 +1,10 @@
 import type {
   FileRefDto,
   MessageDto,
+  UploadStatusDto,
 } from "@lan-drop/protocol";
 
-import type { MessageRecord } from "./types.ts";
+import type { MessageRecord, UploadRecord } from "./types.ts";
 
 /**
  * 内部记录 → 线上 DTO。
@@ -35,6 +36,25 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     if (record.file.sha256) file.sha256 = record.file.sha256;
     dto.file = file;
   }
+
+  return dto;
+}
+
+/** 上传会话 → 可续传视图。注意 `tempPath` 是白名单外的字段，只在这里被挡掉。 */
+export function toUploadStatusDto(record: UploadRecord, chunkSize: number): UploadStatusDto {
+  const dto: UploadStatusDto = {
+    uploadId: record.id,
+    name: record.name,
+    size: record.size,
+    receivedBytes: record.receivedBytes,
+    state: record.state,
+    resumable: record.state === "open" && record.receivedBytes < record.size,
+    chunkSize,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+
+  if (record.mime) dto.mime = record.mime;
 
   return dto;
 }

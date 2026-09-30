@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, rename, stat, truncate, unlink } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -59,6 +59,21 @@ export async function sha256File(absPath: string): Promise<string> {
   return hash.digest("hex");
 }
 
+/**
+ * 把文件截断到指定长度；文件不存在时视为「已经是空文件」，静默通过。
+ *
+ * 断点续传的安全绳，见 [appendStreamToFile] 的说明。**必须在每次追加前调用**，
+ * 否则一次中途断流就会永久写坏这个文件。
+ */
+export async function truncateTo(absPath: string, size: number): Promise<void> {
+  try {
+    await truncate(absPath, size);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
 export interface StreamToFileResult {
   bytesWritten: number;
   /** 超出上限被截断时为 true */
@@ -71,6 +86,15 @@ export interface StreamToFileResult {
  * 关键点：全程不把 body 读进内存——1 GB 的文件在 512 MB 内存的机器上也要能传。
  * `limit` 是本次允许写入的最大字节数（= 文件总大小 - 已接收字节数），
  * 客户端多发了就立刻中断，避免被塞爆磁盘。
+ *
+ * ⚠️ 调用方必须先用 [truncateTo] 把文件截断到本次的起始 offset。
+ * 本函数是纯追加（`flags: "a"`），而请求中途断流时——客户端被杀、WiFi 掉线、
+ * 服务端 abort——`pipeline` 抛错返回，但**已经落盘的那部分字节留在文件里**，
+ * 而数据库的 `received_bytes` 仍是这一片之前的旧值。两者一旦不一致，
+ * 下次从「权威 offset」续传就会把新数据追加在残字节之后，文件从此永久错位，
+ * 而且 sha256 要到全部传完才会发现不符（100 GB 的文件就是白传一遍）。
+ * 截断到 offset 把这部分残字节丢掉（代价是重传不到一个分片），换来一条铁律：
+ * **追加开始时，文件长度恒等于本次起始 offset**。
  */
 export async function appendStreamToFile(
   source: Readable,

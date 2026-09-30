@@ -129,6 +129,16 @@ class ChatViewModel(
         transfers.cancel(transferId)
     }
 
+    /** 暂停：保住两端的进度，记录停在「已暂停」。 */
+    fun pauseTransfer(transferId: String) {
+        transfers.pause(transferId)
+    }
+
+    /** 继续：上传按服务端权威进度、下载按本地文件长度重新对齐后接着传。 */
+    fun resumeTransfer(transferId: String) {
+        transfers.resume(transferId)
+    }
+
     fun refresh() {
         viewModelScope.launch { messages.syncNow() }
     }

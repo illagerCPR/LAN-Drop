@@ -11,7 +11,9 @@ import io.github.illagercpr.landrop.protocol.PairRequestDto
 import io.github.illagercpr.landrop.protocol.PairResponseDto
 import io.github.illagercpr.landrop.protocol.SendMessageRequestDto
 import io.github.illagercpr.landrop.protocol.ServerInfoDto
+import io.github.illagercpr.landrop.protocol.UploadListDto
 import io.github.illagercpr.landrop.protocol.UploadPatchResponseDto
+import io.github.illagercpr.landrop.protocol.UploadStatusDto
 import java.io.IOException
 import java.io.InputStream
 import kotlin.coroutines.resume
@@ -131,6 +133,23 @@ class LanDropApi(
     suspend fun abortUpload(connection: Connection, uploadId: String) {
         val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId").delete().build()
         execute(request).close()
+    }
+
+    /**
+     * 询问服务端某个上传会话收了多少字节——断点续传的锚点。
+     *
+     * 会话已被回收（404）或被中止时抛 [ApiException]，调用方据此改为重新建会话。
+     */
+    suspend fun uploadStatus(connection: Connection, uploadId: String): UploadStatusDto {
+        val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId").get().build()
+        return decode(execute(request))
+    }
+
+    /** 列出本设备在服务端的上传会话；`state` 为空表示不过滤。 */
+    suspend fun listUploads(connection: Connection, state: String? = null): UploadListDto {
+        val query = if (state != null) "?state=$state" else ""
+        val request = authorized(connection, "${ApiPath.UPLOADS}$query").get().build()
+        return decode(execute(request))
     }
 
     /**

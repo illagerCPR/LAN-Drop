@@ -56,6 +56,16 @@ export type MessageKind = "text" | "link" | "file";
 /** 传输方向。 */
 export type TransferDirection = "upload" | "download";
 
+/**
+ * 上传会话在服务端的状态。
+ *
+ * 与客户端的 `TransferState` 不是一回事：后者是「任务」的本地状态（含暂停、
+ * 完成等），这里是「服务端那一半会话」的状态，客户端只能读不能写。
+ * 客户端要表达「暂停」，做法是什么都不做——会话留在 `open`，临时文件留在磁盘，
+ * 恢复时接着追加即可。
+ */
+export type UploadState = "open" | "completed" | "aborted";
+
 /** 传输状态机。 */
 export type TransferState =
   | "queued"
@@ -125,6 +135,33 @@ export interface CreateUploadResponse {
   receivedBytes: number;
   /** 建议分片大小（字节） */
   chunkSize: number;
+}
+
+/**
+ * 上传会话的可续传视图（`GET /uploads/:id`、`GET /uploads`）。
+ *
+ * 存在的意义只有一个：客户端进程被杀之后，本地只剩一个 `uploadId`，
+ * 必须回来问服务端「你到底收了多少字节」，才能从正确的 offset 接着发。
+ */
+export interface UploadStatusDto {
+  uploadId: string;
+  name: string;
+  size: number;
+  mime?: string;
+  /** 已落盘字节数；**这就是续传锚点** */
+  receivedBytes: number;
+  state: UploadState;
+  /** 服务端认为还能继续追加（`open` 且尚未收满） */
+  resumable: boolean;
+  /** 建议分片大小（字节）；续传时客户端照此切片，不必自己硬编码 */
+  chunkSize: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 上传会话列表（`GET /uploads`）。 */
+export interface UploadListDto {
+  items: UploadStatusDto[];
 }
 
 /** 传输进度事件负载。 */

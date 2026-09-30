@@ -173,6 +173,70 @@ class ProtocolJsonTest {
         assertNull(parseWsEnvelope("""{"payload":{}}"""))
     }
 
+    // ---------------------------------------------------------------- 断点续传
+
+    @Test
+    fun `解析上传会话的可续传视图`() {
+        // 样本取自实跑的服务端：声明 9 字节、已收 4 字节、会话仍在 open
+        val status = ProtocolJson.decodeFromString(
+            UploadStatusDto.serializer(),
+            """{"uploadId":"0193b0f0-6f2e-7c31-9a55-2f0b7c1d4e88","name":"样本.bin","size":9,
+               "receivedBytes":4,"state":"open","resumable":true,
+               "createdAt":1790746000000,"updatedAt":1790746001234,
+               "mime":"application/octet-stream"}""",
+        )
+
+        assertEquals("样本.bin", status.name)
+        assertEquals(9L, status.size)
+        assertEquals(4L, status.receivedBytes)
+        assertEquals(UploadState.OPEN, status.state)
+        assertTrue(status.resumable)
+        assertEquals("application/octet-stream", status.mime)
+    }
+
+    @Test
+    fun `上传会话列表解析，空列表不报错`() {
+        val list = ProtocolJson.decodeFromString(
+            UploadListDto.serializer(),
+            """{"items":[{"uploadId":"a","name":"x","size":100,"receivedBytes":0,
+                "state":"open","resumable":true,"createdAt":1,"updatedAt":1}]}""",
+        )
+        assertEquals(1, list.items.size)
+        assertNull(list.items[0].mime)
+
+        val empty = ProtocolJson.decodeFromString(UploadListDto.serializer(), """{"items":[]}""")
+        assertTrue(empty.items.isEmpty())
+
+        // 服务端将来加字段不应把老客户端打挂（ProtocolJson 已开 ignoreUnknownKeys）
+        val tolerant = ProtocolJson.decodeFromString(
+            UploadListDto.serializer(),
+            """{"items":[],"nextCursor":"abc"}""",
+        )
+        assertTrue(tolerant.items.isEmpty())
+    }
+
+    @Test
+    fun `会话已结束时 resumable 为 false`() {
+        val aborted = ProtocolJson.decodeFromString(
+            UploadStatusDto.serializer(),
+            """{"uploadId":"a","name":"x","size":10,"receivedBytes":4,
+                "state":"aborted","resumable":false,"createdAt":1,"updatedAt":2}""",
+        )
+        assertEquals(UploadState.ABORTED, aborted.state)
+        assertEquals(false, aborted.resumable)
+    }
+
+    @Test
+    fun `409 错误体能带回权威 offset`() {
+        // 客户端断点续传完全依赖这个字段重新对齐
+        val error = ProtocolJson.decodeFromString(
+            ApiErrorDto.serializer(),
+            """{"error":"offset_mismatch","receivedBytes":2097152}""",
+        )
+        assertEquals("offset_mismatch", error.error)
+        assertEquals(2097152L, error.receivedBytes)
+    }
+
     // ---------------------------------------------------------------- 工具
 
     @Test
