@@ -15,7 +15,9 @@ coverage/
 .npm/
 
 # ---- 服务端运行时数据 ----
-data/
+# 注意：必须写成 /data/（锚定仓库根）。裸写 data/ 会匹配**任意深度**的同名目录，
+# 曾把 android/app/src/main/java/.../landrop/data/ 整个源码包静默忽略掉。
+/data/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal

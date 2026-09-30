@@ -4,7 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import io.github.illagercpr.landrop.ui.home.HomeScreen
+import io.github.illagercpr.landrop.ui.AppRoot
 import io.github.illagercpr.landrop.ui.theme.LanDropTheme
 
 class MainActivity : ComponentActivity() {
@@ -13,7 +13,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             LanDropTheme {
-                HomeScreen()
+                AppRoot()
             }
         }
     }
