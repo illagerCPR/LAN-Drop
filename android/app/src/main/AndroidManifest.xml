@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- P3 收尾：扫码配对。相机权限只在扫码页申请，不在启动时要 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <application
         android:name=".LanDropApp"
         android:allowBackup="true"

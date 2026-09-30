@@ -4,7 +4,9 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -16,11 +18,12 @@ import io.github.illagercpr.landrop.ui.chat.ChatScreen
 import io.github.illagercpr.landrop.ui.chat.ChatViewModel
 import io.github.illagercpr.landrop.ui.pair.PairingScreen
 import io.github.illagercpr.landrop.ui.pair.PairingViewModel
+import io.github.illagercpr.landrop.ui.pair.QrScanScreen
 
 /**
- * 应用根：按「有没有配对凭据」在两个界面之间切换。
+ * 应用根：按「有没有配对凭据」在界面之间切换。
  *
- * 不做路由库——首版只有这两个目的地，且切换条件就是一条状态流，
+ * 不做路由库——目的地只有配对页、扫码页与会话页，且切换条件就是一条状态流，
  * 引入 Navigation 只会带来回退栈语义上的额外决策。
  */
 @Composable
@@ -28,6 +31,10 @@ fun AppRoot() {
     val context = LocalContext.current
     val container = remember { (context.applicationContext as LanDropApp).container }
     val connection by container.connectionStore.connection.collectAsStateWithLifecycle()
+
+    // 扫码页的进出是纯组合状态：不配对时在配对页与扫码页之间切换，
+    // 配对成功 connection 变化会自然把扫码页也一并换成会话页
+    var qrScanning by remember { mutableStateOf(false) }
 
     val pairingViewModel: PairingViewModel = viewModel(
         factory = viewModelFactory {
@@ -69,7 +76,20 @@ fun AppRoot() {
     }
 
     if (current == null) {
-        PairingScreen(viewModel = pairingViewModel)
+        if (qrScanning) {
+            QrScanScreen(
+                onBack = { qrScanning = false },
+                onScanned = { content ->
+                    qrScanning = false
+                    pairingViewModel.applyScanned(content)
+                },
+            )
+        } else {
+            PairingScreen(
+                viewModel = pairingViewModel,
+                onStartQrScan = { qrScanning = true },
+            )
+        }
     } else {
         ChatScreen(
             viewModel = chatViewModel,

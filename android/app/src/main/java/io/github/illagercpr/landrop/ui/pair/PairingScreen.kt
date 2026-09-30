@@ -41,12 +41,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 /**
  * 配对页。
  *
- * 手输地址 + 配对码是主路径；「粘贴配对链接」可以直接消化从 PC 复制来的
- * 整条 `http://ip:port/#pair=CODE`，与扫码走同一套解析逻辑（P3 接摄像头即可）。
+ * 手输地址 + 配对码是主路径；「扫码配对」与「粘贴配对链接」都直接消化
+ * PC 配对页给出的整条 `http://ip:port/#pair=CODE`，三者走同一套解析逻辑
+ * （[PairingViewModel.applyScanned]，扫码页解出后也回到这里）。
  */
 @Composable
 fun PairingScreen(
     viewModel: PairingViewModel,
+    onStartQrScan: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -134,6 +136,17 @@ fun PairingScreen(
                 ) {
                     Text("粘贴链接")
                 }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // 扫码配对：相机权限只在进入扫码页时申请，配对页自身不弹授权
+            OutlinedButton(
+                onClick = onStartQrScan,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("扫码配对")
             }
 
             if (busy) {
