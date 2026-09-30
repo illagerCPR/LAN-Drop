@@ -188,16 +188,22 @@ async function fetchLinuxNode(version) {
   return nodeBinary;
 }
 
-/** 在哪个平台构建就取哪边的 node：sidecar 必须与主程序同平台，不做交叉。 */
+/** 在哪个平台构建就取哪边的 node：sidecar 必须与主程序同平台，不做交叉。
+ *  例外：为 Windows 构建树准备资源时，可在 WSL 里用 LAN_DROP_TARGET_PLATFORM=win32 覆盖
+ *  （取值与 process.platform 同空间：win32 / linux），产出的 binaries/resources 平台无关可直拷。 */
 function sidecarPlatform() {
-  switch (process.platform) {
-    case "win32":
+  const override = process.env.LAN_DROP_TARGET_PLATFORM?.trim().toLowerCase();
+  switch (override || process.platform) {
+    case "win32": {
       return { os: "windows", triple: WINDOWS_TARGET_TRIPLE, suffix: ".exe" };
-    case "linux":
+    }
+    case "linux": {
       return { os: "linux", triple: LINUX_TARGET_TRIPLE, suffix: "" };
-    default:
-      throw new Error(`暂不支持在 ${process.platform} 上构建桌面壳 sidecar`);
-}
+    }
+    default: {
+      throw new Error(`暂不支持为 ${override || process.platform} 构建桌面壳 sidecar`);
+    }
+  }
 }
 
 async function placeSidecarNode() {

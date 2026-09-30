@@ -346,9 +346,10 @@ PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口�
 - **构建（Windows，NSIS）**（`pnpm desktop:resources` 之后在 Windows 侧）：
 
   ```
-  pnpm desktop:resources     # ① esbuild bundle + web/dist + node.exe → apps/desktop/src-tauri/{resources,binaries}
-  # ② 把 apps/desktop/src-tauri 复制到 C: 盘构建目录（WSL 的 /mnt/c 9P 反向 I/O 跑不动 cargo）
-  # ③ Windows 本机 node 跑 @tauri-apps/cli build（CLI 平台包是 .node 原生插件，没有独立 exe）
+  LAN_DROP_TARGET_PLATFORM=win32 pnpm desktop:resources  # ① bundle + web/dist + Windows node.exe（WSL 里跑）
+  # ② 把 src-tauri 源码与 {resources,binaries} 复制到 Windows 本地盘构建目录
+  #    （当前 E:\ClaudeCode\lan-drop-desktop-build，build.cmd 用 %~dp0 相对定位；9P 反向 I/O 跑不动 cargo）
+  # ③ 构建树里 cmd /c build.cmd（树内独立 cli/ 放 Windows 版 @tauri-apps/cli）
   # ④ 产物 src-tauri/target/release/bundle/nsis/*.exe 拷回仓库 dist/
   ```
 

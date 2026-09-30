@@ -67,9 +67,13 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   ③ NSIS currentUser 安装目录 `%LOCALAPPDATA%\LAN-Drop` 与服务端默认数据根**撞目录**（卸载会
   误删数据），壳已注入 `LAN_DROP_DATA_ROOT=%LOCALAPPDATA%\LAN-Drop-Data`（用户显式设置时不覆盖）。
 - **Windows 侧构建**：MSVC（VS 18 BuildTools）与 WebView2 运行时本机已有；crates 走 rsproxy
-  sparse。**构建树必须复制到 C: 盘**——仓库在 WSL 文件系统上，从 Windows 侧按 \\\\wsl.localhost 路径
-  构建，9P I/O 会让 cargo 慢到不可用。构建目录 `C:\Users\illag\.lan-drop-desktop-build`（
-  `build.cmd` 一键跑 tauri build，NSIS 出安装包），产物拷回仓库 `dist/`。
+  sparse。**构建树必须放 Windows 本地盘**——仓库在 WSL 文件系统上，从 Windows 侧按 \\\\wsl.localhost
+  路径构建，9P I/O 会让 cargo 慢到不可用。构建目录 `E:\ClaudeCode\lan-drop-desktop-build`
+  （2026-10-01 自 `C:\Users\illag\` 迁来；`build.cmd` 用 `%~dp0` 相对定位，树内含独立 `cli/`
+  （Windows 版 @tauri-apps/cli）与 `src-tauri/`（最新源码 + Windows node.exe + resources）），
+  一键 NSIS 出安装包，产物拷回仓库 `dist/`。重建构建树：复制 src-tauri 源码（排除
+  target/gen/binaries/resources）→ 资源用 `LAN_DROP_TARGET_PLATFORM=win32 pnpm desktop:resources`
+  产出后拷入（或从旧树 robocopy）→ `robocopy` 旧树 `cli/`。
 - **Linux 侧构建（AppImage）在 WSL 里直接做**（仓库就是本地 I/O，无需复制构建树）：
   `sudo apt install libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev`
   （一次；build-essential/file/libssl-dev 本机已有）→ `pnpm desktop:resources`（按运行平台自动取
