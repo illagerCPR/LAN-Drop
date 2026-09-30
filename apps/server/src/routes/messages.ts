@@ -44,6 +44,7 @@ export function registerMessageRoutes(app: FastifyInstance, ctx: AppContext): vo
         items: items.map(toMessageDto),
         latestSeq: ctx.store.latestSeq(),
         hasMore,
+        purgedUpto: ctx.store.purgedUpto(),
       };
     },
   );

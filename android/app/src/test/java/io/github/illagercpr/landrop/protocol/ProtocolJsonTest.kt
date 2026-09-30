@@ -44,6 +44,7 @@ class ProtocolJsonTest {
             {
               "latestSeq": 22,
               "hasMore": false,
+              "purgedUpto": 15,
               "items": [
                 {"seq":16,"id":"cb1954f1-5a81-4929-8175-163e26b9050f","kind":"text",
                  "senderId":"d8685e6c-f111-4ef2-b6ee-62bb691c609d","senderName":"冒烟测试设备",
@@ -56,10 +57,21 @@ class ProtocolJsonTest {
         )
 
         assertEquals(22, page.latestSeq)
+        assertEquals(15, page.purgedUpto)
         assertEquals(2, page.items.size)
         assertEquals(MessageKind.TEXT, page.items[0].kind)
         assertEquals(MessageKind.LINK, page.items[1].kind)
         assertNull(page.items[0].file)
+    }
+
+    @Test
+    fun `旧服务端缺 purgedUpto 字段时默认 0（向前兼容）`() {
+        val page = ProtocolJson.decodeFromString(
+            MessagePageDto.serializer(),
+            """{"latestSeq":5,"hasMore":false,"items":[]}""",
+        )
+
+        assertEquals(0, page.purgedUpto)
     }
 
     @Test

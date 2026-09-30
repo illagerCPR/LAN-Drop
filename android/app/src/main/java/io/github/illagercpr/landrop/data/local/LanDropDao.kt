@@ -29,6 +29,10 @@ interface MessageDao {
 
     @Query("DELETE FROM messages")
     suspend fun clear()
+
+    /** 保留策略联动：服务端删掉了 `seq <= uptoSeq` 的消息，本地缓存同步删除。 */
+    @Query("DELETE FROM messages WHERE seq <= :uptoSeq")
+    suspend fun deleteUpTo(uptoSeq: Long)
 }
 
 @Dao

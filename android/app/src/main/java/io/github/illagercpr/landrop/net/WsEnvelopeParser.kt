@@ -2,6 +2,7 @@ package io.github.illagercpr.landrop.net
 
 import io.github.illagercpr.landrop.protocol.DevicePresencePayloadDto
 import io.github.illagercpr.landrop.protocol.MessageDto
+import io.github.illagercpr.landrop.protocol.MessagesPurgedPayloadDto
 import io.github.illagercpr.landrop.protocol.TypingPayloadDto
 import io.github.illagercpr.landrop.protocol.WsEventType
 import io.github.illagercpr.landrop.protocol.WsHelloPayloadDto
@@ -37,6 +38,12 @@ internal fun parseWsEnvelope(raw: String, json: Json = ProtocolJson): WsEvent? {
             }
 
             WsEventType.MESSAGE_DELETED -> WsEvent.MessagesCleared
+
+            WsEventType.MESSAGES_PURGED -> payload?.let {
+                WsEvent.MessagesPurged(
+                    json.decodeFromJsonElement(MessagesPurgedPayloadDto.serializer(), it).uptoSeq,
+                )
+            }
 
             WsEventType.DEVICE_ONLINE -> presence(json, payload, online = true)
             WsEventType.DEVICE_OFFLINE -> presence(json, payload, online = false)

@@ -37,6 +37,9 @@ object WsEventType {
     /** 消息被撤回/删除 */
     const val MESSAGE_DELETED = "message.deleted"
 
+    /** 服务端按保留策略自动清除旧消息（`payload.uptoSeq` 之前的可安全清除） */
+    const val MESSAGES_PURGED = "messages.purged"
+
     /** 传输进度（大文件节流后推送） */
     const val TRANSFER_PROGRESS = "transfer.progress"
 
@@ -133,6 +136,8 @@ data class MessagePageDto(
     /** 服务端当前最大 seq，客户端据此校准本地游标 */
     @SerialName("latestSeq") val latestSeq: Long,
     @SerialName("hasMore") val hasMore: Boolean = false,
+    /** 保留策略历史水位：`seq <= purgedUpto` 的消息服务端已删（旧服务端无此字段时默认 0） */
+    @SerialName("purgedUpto") val purgedUpto: Long = 0,
 )
 
 /** 发送文字/链接的请求体，对应 `POST /api/v1/messages`。 */
@@ -251,6 +256,12 @@ data class DevicePresencePayloadDto(
 data class TypingPayloadDto(
     @SerialName("deviceId") val deviceId: String,
     @SerialName("deviceName") val deviceName: String,
+)
+
+/** WS 保留策略清理事件负载：服务端删掉了 `seq <= uptoSeq` 的消息（严格前缀删除）。 */
+@Serializable
+data class MessagesPurgedPayloadDto(
+    @SerialName("uptoSeq") val uptoSeq: Long,
 )
 
 /** WS 传输进度负载。`state` 取值见 `data.local.TransferState`。 */

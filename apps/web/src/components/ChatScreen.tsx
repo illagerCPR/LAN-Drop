@@ -7,6 +7,7 @@ import {
   isLinkText,
   type DevicePresencePayload,
   type MessageDto,
+  type MessagesPurgedPayload,
   type ServerInfoDto,
   type TypingPayload,
   type WsEnvelopeDto,
@@ -115,6 +116,10 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
   const loadMissing = useCallback(async () => {
     for (;;) {
       const page = await listMessages(seqRef.current, PAGE_SIZE);
+      // 补上离线期间错过的保留清理：服务端删到哪，本地缓存同步删到哪（幂等）
+      if (page.purgedUpto > 0) {
+        setMessages((prev) => prev.filter((message) => message.seq > page.purgedUpto));
+      }
       appendMessages(page.items);
 
       const lastItem = page.items[page.items.length - 1];
@@ -165,6 +170,14 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
             setMessages([]);
             seqRef.current = 0;
             void loadMissing().catch(reportError);
+            break;
+          }
+
+          case WsEventType.messagesPurged: {
+            // 保留策略删掉了 seq <= uptoSeq 的旧消息；这是前缀删除，游标不用回退
+            const purged = event.payload as MessagesPurgedPayload | undefined;
+            if (purged === undefined) break;
+            setMessages((prev) => prev.filter((message) => message.seq > purged.uptoSeq));
             break;
           }
 

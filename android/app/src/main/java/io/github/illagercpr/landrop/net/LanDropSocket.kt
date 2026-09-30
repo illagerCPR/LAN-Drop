@@ -58,6 +58,9 @@ sealed interface WsEvent {
     /** 会话被清空（服务端只允许宿主自己清，这里仅同步本地缓存）。 */
     data object MessagesCleared : WsEvent
 
+    /** 保留策略清掉了 `seq <= uptoSeq` 的旧消息（严格前缀删除，游标无需回退）。 */
+    data class MessagesPurged(val uptoSeq: Long) : WsEvent
+
     data class Presence(
         val online: Boolean,
         val deviceName: String,

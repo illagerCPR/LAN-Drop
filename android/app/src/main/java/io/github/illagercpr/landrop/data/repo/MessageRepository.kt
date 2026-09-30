@@ -134,6 +134,10 @@ class MessageRepository(
                     val since = dao.latestSeq()
                     val page = api.listMessages(connection, since, PAGE_SIZE)
 
+                    // 补上离线期间错过的保留清理：服务端删到哪，本地缓存同步删到哪
+                    // （幂等，每页重复执行无副作用；值为 0 时是空区间）
+                    dao.deleteUpTo(page.purgedUpto)
+
                     if (page.items.isEmpty()) break
 
                     val entities = page.items.map { it.toEntity(connection.deviceId) }
@@ -197,6 +201,10 @@ class MessageRepository(
             }
 
             is WsEvent.MessagesCleared -> dao.clear()
+
+            // 保留策略的前缀删除：删到 seq X 为止，本地缓存同步删到 X；
+            // 游标不用动（seq 单调递增，新消息照常增量同步）
+            is WsEvent.MessagesPurged -> dao.deleteUpTo(event.uptoSeq)
 
             is WsEvent.Presence -> {
                 event.onlineCount?.let { _onlineCount.value = it }

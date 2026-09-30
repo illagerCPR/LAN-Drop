@@ -1,5 +1,7 @@
 import { join } from "node:path";
 
+import { WsEventType } from "@lan-drop/protocol";
+
 import { createApp } from "./app.ts";
 import { PairingManager } from "./auth.ts";
 import { loadConfig } from "./config.ts";
@@ -13,7 +15,6 @@ import { Store } from "./store.ts";
 
 /** 超时未完成的上传，其 .part 临时文件在超过该时长后被回收。 */
 const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -73,6 +74,42 @@ async function main(): Promise<void> {
 
   app.log.info(lines.join("\n"));
 
+  // P4-5 消息保留策略：天数 + 条数双阈值（env 配置，0 = 关闭）
+  const retentionOlderThanMs =
+    config.retentionDays > 0 ? config.retentionDays * 24 * 60 * 60 * 1000 : null;
+  const retentionKeepCount = config.retentionMaxMessages > 0 ? config.retentionMaxMessages : null;
+
+  /** 执行一轮保留清理；删了消息就广播 `messages.purged`，让在线客户端同步删本地缓存。 */
+  const purgeRetention = async (): Promise<void> => {
+    if (retentionOlderThanMs === null && retentionKeepCount === null) return;
+
+    const result = store.purgeExpiredMessages({
+      olderThanMs: retentionOlderThanMs,
+      keepCount: retentionKeepCount,
+    });
+    if (result.purged === 0) return;
+
+    for (const file of result.files) {
+      await removeFileQuietly(join(config.filesRoot, file.relPath));
+    }
+
+    app.log.info(
+      { purged: result.purged, uptoSeq: result.uptoSeq, files: result.files.length },
+      "已按保留策略清除旧消息",
+    );
+    ctx.hub.broadcast({
+      type: WsEventType.messagesPurged,
+      payload: { uptoSeq: result.uptoSeq },
+    });
+  };
+
+  // 启动即清一次（否则两次运行间隔内过期消息要等满一个小时才被清）
+  try {
+    await purgeRetention();
+  } catch (error) {
+    app.log.warn({ err: error }, "启动时执行保留清理失败");
+  }
+
   // 定期回收中断的上传：客户端可能中途退出，留下永不完成的会话与 .part 文件
   const cleanupTimer = setInterval(() => {
     void (async () => {
@@ -88,8 +125,14 @@ async function main(): Promise<void> {
       } catch (error) {
         app.log.warn({ err: error }, "回收超时上传时出错");
       }
+
+      try {
+        await purgeRetention();
+      } catch (error) {
+        app.log.warn({ err: error }, "执行保留清理时出错");
+      }
     })();
-  }, CLEANUP_INTERVAL_MS);
+  }, config.cleanupIntervalMs);
   cleanupTimer.unref();
 
   let shuttingDown = false;

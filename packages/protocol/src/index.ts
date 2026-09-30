@@ -34,6 +34,8 @@ export const WsEventType = {
   messageNew: "message.new",
   /** 消息被撤回/删除 */
   messageDeleted: "message.deleted",
+  /** 服务端按保留策略自动清除旧消息（P4-5），`payload.uptoSeq` 之前的可安全清除 */
+  messagesPurged: "messages.purged",
   /** 传输进度（大文件节流后推送） */
   transferProgress: "transfer.progress",
   /** 设备上线/下线 */
@@ -125,6 +127,24 @@ export interface MessagePageDto {
   /** 服务端当前最大 seq，客户端据此校准本地游标 */
   latestSeq: number;
   hasMore: boolean;
+  /**
+   * 服务端保留策略的历史累计水位：`seq <= purgedUpto` 的消息已从服务端删除。
+   * 客户端在同步时应用它（删本地同区间的缓存行），即可补上离线期间错过的
+   * `messages.purged` 事件；幂等，重复应用无副作用。`0` 表示从未清理。
+   */
+  purgedUpto: number;
+}
+
+/**
+ * `messages.purged` 事件负载：服务端保留策略删掉了 `seq <= uptoSeq` 的消息。
+ *
+ * 与 `message.deleted`（用户手动清空全部、seq 不回退）不同，这是**按 seq 截断**的自动清理；
+ * 客户端删掉本地 `seq <= uptoSeq` 的缓存行即可，游标无需回退（新消息的 seq 仍单调递增）。
+ * 离线错过本事件的客户端会继续保留本地缓存——「客户端缓存聊天记录」本就是产品定位，
+ * 服务端策略只保证磁盘不再无限增长，不追杀客户端已经拿到的数据。
+ */
+export interface MessagesPurgedPayload {
+  uptoSeq: number;
 }
 
 /** WebSocket 事件信封：`type` 决定 `payload` 的解析方式。 */

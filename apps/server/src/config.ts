@@ -20,6 +20,18 @@ export interface ServerConfig {
   discoveryPort: number;
   /** 是否启用 UDP 自动发现 */
   discoveryEnabled: boolean;
+  /**
+   * 消息保留天数：超过该天数的最旧消息（按 seq 截断）随小时级清理定时器删除。
+   * `0` 表示不按天数清理。
+   */
+  retentionDays: number;
+  /**
+   * 消息保留条数上限：只保留最新 N 条，更旧的按 seq 截断删除。
+   * `0` 表示不按条数清理。
+   */
+  retentionMaxMessages: number;
+  /** 清理定时器间隔（超时上传回收 + 保留策略都挂在这一个定时器上）。 */
+  cleanupIntervalMs: number;
 }
 
 function defaultDataRoot(): string {
@@ -73,5 +85,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     privateNetworkOnly: parseBoolOr(env["LAN_DROP_PRIVATE_ONLY"], true),
     discoveryPort: parseIntOr(env["LAN_DROP_DISCOVERY_PORT"], 8788),
     discoveryEnabled: parseBoolOr(env["LAN_DROP_DISCOVERY"], true),
+    retentionDays: parseIntOr(env["LAN_DROP_RETENTION_DAYS"], 0),
+    retentionMaxMessages: parseIntOr(env["LAN_DROP_RETENTION_MAX"], 0),
+    cleanupIntervalMs: Math.max(1000, parseIntOr(env["LAN_DROP_CLEANUP_INTERVAL_MS"], 3_600_000)),
   };
 }

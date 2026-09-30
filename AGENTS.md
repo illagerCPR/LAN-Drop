@@ -12,7 +12,7 @@
 ```bash
 pnpm install
 pnpm -r typecheck           # 全仓类型检查，提交前必跑
-pnpm -r test                # TS 侧单测（node --test 直接跑 .ts，无测试框架）：26 项
+pnpm -r test                # TS 侧单测（node --test 直接跑 .ts，无测试框架）：34 项
 pnpm dev                    # 服务端 --watch，监听 0.0.0.0:8787
 pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev）
 node scripts/smoke-api.mjs  # 67 项端到端冒烟（HTTP + WS + 断点续传 + UDP 发现）；必须先起服务端，且必须本机跑（配对码仅回环可读）
@@ -180,6 +180,23 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - 真机验「链接可点」不需要截图：`input tap` 链接节点的中心，再看
   `dumpsys activity activities | grep topResumedActivity` 是否变成浏览器；点纯文本做负向对照。
 
+### 消息保留策略（P4-5）
+
+- **删除是严格 seq 前缀（`seq <= uptoSeq`），不要改成按 `created_at` 逐行删**：客户端只听得懂
+  「删到 seq X 为止」。天数阈值与条数阈值各自换算成 seq 边界取较大者；`AUTOINCREMENT` 的
+  空洞按实际 seq 计算（`apps/server/test/store-purge.test.ts` 钉住），按「条数偏移」算会误删。
+- **手动「清空会话」与保留策略的文件语义不同，是设计不是不一致**：保留策略删被清消息引用的
+  文件行与磁盘字节（不然策略只删 DB 行、磁盘照样涨）；手动清空刻意保留文件（用户主动操作，
+  宁可保守）。多条消息引用同一文件时以留存者为准。
+- **客户端联动有两条路径，缺一不可**：在线收 `messages.purged` 广播实时删；离线错过的靠
+  `GET /messages` 响应的 `purgedUpto` 水位在 syncNow/拉取时补删（幂等）。**服务端重启必然
+  断开所有客户端**，所以启动那一轮清理的广播注定没人收到——水位补齐是主路径，不是兜底。
+  Kotlin 侧 `purgedUpto` 默认 `0`，兼容未升级的服务端。
+- **水位持久化在 `meta` 表且只进不退**：手动清空会把消息表清空，随表现算的水位会瞬间归零、
+  历史信息丢失。改清理逻辑时保持 `max(旧值, 本次uptoSeq)` 的推进方向。
+- 验证保留策略别等一小时定时器：`LAN_DROP_CLEANUP_INTERVAL_MS` 可调（默认 3600000），
+  15 秒一轮足够跑完「在线广播 + 离线水位」两条路径的真机验证。
+
 ## Web（apps/web）
 
 - tsconfig 开 `exactOptionalPropertyTypes`：给可选字段显式传 `undefined` 会编译错，用条件展开（`...(x ? { k: v } : {})`）。
@@ -198,7 +215,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 89 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐）。
+- `./gradlew :app:testDebugUnitTest` 是 96 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 16 项协议一致性（改协议时同步更新里面的真实响应样本），`net/WsEnvelopeParserTest` 4 项 WS 事件信封解析（`message.deleted`/`messages.purged` 必须解析为对应事件，未知 type 与坏 JSON 必须拒绝——协议向前兼容靠这条），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐）。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）

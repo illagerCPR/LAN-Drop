@@ -276,10 +276,111 @@ export class Store {
     return row ? toNumber(row.seq) : 0;
   }
 
+  /** 保留策略的历史累计水位：`seq <= purgedUpto` 的消息已从服务端删除。 */
+  purgedUpto(): number {
+    return Number.parseInt(this.getMeta("purged_upto") ?? "0", 10) || 0;
+  }
+
   /** 清空全部消息（保留文件实体，避免误删用户已落盘的数据）。 */
   clearMessages(): number {
     const info = this.#stmt("DELETE FROM messages").run();
     return toNumber(info.changes);
+  }
+
+  /**
+   * 按保留策略清除旧消息（P4-5），返回被删文件的记录供调用方清理磁盘。
+   *
+   * 「天数」与「条数」两个阈值各自换算成一个 seq 边界，取较大者做**严格前缀删除**
+   * （`seq <= uptoSeq`）：天数边界 = 最旧的过期消息的 seq；条数边界 = 保留最新
+   * `keepCount` 条后、被删部分的最大 seq。按前缀删而不是按 `created_at` 逐行删，
+   * 是为了让「服务端删了什么」与客户端能理解的「删到 seq X 为止」是同一个集合——
+   * 客户端收到 `uptoSeq` 后删本地 `seq <= uptoSeq` 即可与服务端精确一致。
+   * seq 按落库顺序分配，created_at 与 seq 的次序在真实流里一致；即便被显式传入的
+   * createdAt 打乱，前缀语义也只是「多留几条较老的消息」，不会误删。
+   *
+   * 被删消息引用的文件行一并删除（多条消息引用同一文件时以留存者为准）；
+   * 磁盘字节由调用方按返回的 `relPath` 清理，删除失败不影响数据库一致性。
+   * 两个阈值都为空（<=0）时不产生任何写操作。
+   */
+  purgeExpiredMessages(options: {
+    olderThanMs: number | null;
+    keepCount: number | null;
+  }): { purged: number; uptoSeq: number; files: FileRecord[] } {
+    const olderThanMs = options.olderThanMs && options.olderThanMs > 0 ? options.olderThanMs : null;
+    const keepCount = options.keepCount && options.keepCount > 0 ? options.keepCount : null;
+    if (olderThanMs === null && keepCount === null) {
+      return { purged: 0, uptoSeq: 0, files: [] };
+    }
+
+    let daysBoundary = 0;
+    if (olderThanMs !== null) {
+      const cutoff = Date.now() - olderThanMs;
+      const row = this.#stmt(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE created_at < ?",
+      ).get(cutoff) as { seq: number | bigint } | undefined;
+      daysBoundary = row ? toNumber(row.seq) : 0;
+    }
+
+    let countBoundary = 0;
+    if (keepCount !== null) {
+      // 最新 keep 条里最旧那条之上全删；总数不足 keep 时边界落在 0，不删
+      const row = this.#stmt(
+        "SELECT COALESCE(MIN(seq), 0) AS seq FROM (SELECT seq FROM messages ORDER BY seq DESC LIMIT ?)",
+      ).get(keepCount) as { seq: number | bigint } | undefined;
+      countBoundary = row ? Math.max(0, toNumber(row.seq) - 1) : 0;
+    }
+
+    const uptoSeq = Math.max(daysBoundary, countBoundary);
+    if (uptoSeq <= 0) {
+      return { purged: 0, uptoSeq: 0, files: [] };
+    }
+
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const doomedFiles = (
+        this.#stmt(
+          `SELECT f.id, f.name, f.size, f.mime, f.sha256, f.rel_path, f.created_at
+           FROM messages m JOIN files f ON f.id = m.file_id
+           WHERE m.seq <= ?`,
+        ).all(uptoSeq) as Record<string, unknown>[]
+      ).map(mapFile);
+
+      const purged = toNumber(
+        this.#stmt("DELETE FROM messages WHERE seq <= ?").run(uptoSeq).changes,
+      );
+
+      // 此刻留在 messages 表里的引用全部来自「留存的消息」；
+      // 被删文件里只有不再被任何留存消息引用的才真删
+      const doomedIds = doomedFiles.map((file) => file.id);
+      const retained = new Set<string>(
+        doomedIds.length === 0
+          ? []
+          : (
+              this.#stmt(
+                `SELECT DISTINCT file_id FROM messages WHERE file_id IN (${doomedIds.map(() => "?").join(", ")})`,
+              ).all(...doomedIds) as Record<string, unknown>[]
+            ).map((row) => String(row["file_id"])),
+      );
+      const removedFiles = doomedFiles.filter((file) => !retained.has(file.id));
+      if (removedFiles.length > 0) {
+        const ids = removedFiles.map((file) => file.id);
+        this.#stmt(
+          `DELETE FROM files WHERE id IN (${ids.map(() => "?").join(", ")})`,
+        ).run(...ids);
+      }
+
+      this.#db.exec("COMMIT");
+      // 水位只进不退：双阈值之外再来一次更小的清理也不该回拨
+      const WATERMARK_KEY = "purged_upto";
+      const previous = Number.parseInt(this.getMeta(WATERMARK_KEY) ?? "0", 10) || 0;
+      if (uptoSeq > previous) {
+        this.setMeta(WATERMARK_KEY, String(uptoSeq));
+      }
+      return { purged, uptoSeq, files: removedFiles };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   // ------------------------------------------------------------ 文件
