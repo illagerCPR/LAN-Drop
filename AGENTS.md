@@ -4,7 +4,7 @@
 
 ## 仓库速览
 
-- pnpm monorepo：`apps/server`（Node 24 + Fastify + `node:sqlite`）、`apps/web`（Vite + React + TS）、`packages/protocol`（协议单一事实源）；`android/` 是独立 Gradle 工程。
+- pnpm monorepo：`apps/server`（Node 24 + Fastify + `node:sqlite`）、`apps/web`（Vite + React + TS）、`packages/protocol`（协议单一事实源）、`apps/desktop`（Tauri 2.x 桌面常驻壳，Rust 构建）；`android/` 是独立 Gradle 工程。
 - 协议唯一事实源：`packages/protocol/src/index.ts`。Android 侧 Kotlin 镜像（`android/.../protocol/Protocol.kt`）必须与其逐字段对齐，字段名以此为准。
 
 ## 常用命令
@@ -18,10 +18,8 @@ pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev�
 node scripts/smoke-api.mjs  # 67 项端到端冒烟（HTTP + WS + 断点续传 + UDP 发现）；必须先起服务端，且必须本机跑（配对码仅回环可读）
 source scripts/dev-env.sh   # JAVA_HOME / ANDROID_HOME / PATH；非交互 shell 必须显式 source（~/.bashrc 会 early-return）
 cd android && ./gradlew :app:assembleDebug
-pnpm package:all            # 出便携包：dist/lan-drop-<版本>-{win-x64.zip,linux-x64.tar.gz}（默认先重建 web）
-pnpm verify:package         # 验收 Linux 包（解压真包 → 包内产物启动 → 67 项 smoke）
-node scripts/verify-package.mjs --target win   # 验收 Windows 包（真实 Windows 进程跑 smoke，经 WSL 互操作）
-pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查）；出包时缺 BOM 会直接失败
+pnpm desktop:resources      # 桌面壳资源：esbuild 自包含 server bundle（metafile 检查）+ web/dist + sidecar node.exe
+pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查）
 ```
 
 - 验证顺序：服务端改动后**重启进程**再跑 smoke（静态根、数据目录在 boot 时确定）；`node --watch` 只热载 src。
@@ -35,6 +33,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 
 - npm → npmmirror（`.npmrc`）；Gradle 发行版 → 腾讯云（wrapper）；Maven → `google()` 直连 + 阿里云，顺序见 `android/settings.gradle.kts` 顶部注释。官方源实测仅 44~210 KB/s，镜像 1.2~3.2 MB/s。
 - 本机 `/etc/hosts` 把 github.com 劫持到本地反代：curl 可用，但 **Java/Gradle 直连 GitHub 会 PKIX 失败**。任何构建依赖都不要走 GitHub 直链。
+- Rust：rustup dist 走 **TUNA**（`https://mirrors.tuna.tsinghua.edu.cn/rustup`；rsproxy 的 rustup dist 镜像缺 channel 清单，实测 404）；crates.io 的 sparse 索引走 **rsproxy**（Windows 侧写死在 `C:\Users\illag\.cargo\config.toml`）。Windows 侧已有 stable-msvc 工具链 + VS 18 BuildTools（MSVC 14.51）+ WebView2 运行时，桌面壳构建在 Windows 侧做。
 - WSL2 镜像网络模式；手机访问 WSL 服务端靠 Windows 防火墙放行规则（`scripts/windows-allow-lan.ps1`，已执行过，无需重跑）。「Windows 访问自己的 LAN IP 超时」是镜像模式**假阴性**，以服务端日志 `remoteAddress` 判断手机连通性。
 
 ## 服务端（apps/server）
@@ -49,36 +48,39 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - 数据根：Linux `~/.local/share/lan-drop`，Windows `%LOCALAPPDATA%\LAN-Drop`；env 覆盖项（`LAN_DROP_PORT` 等）见 `src/config.ts`。
 - 展示名 `config.serverName` 默认取 `os.hostname()`，可用 `LAN_DROP_SERVER_NAME` 覆盖。**不要再改回写死的「LAN-Drop 服务端」**：这个名字显示在手机聊天页标题与 Web 控制台标题上，那个位置唯一的职责是回答「我在跟哪台机器说话」，而「服务端」既是实现术语、多台 PC 时又全都同名。改完记得重启服务端（名字在 boot 时确定）。
 
-## 便携打包（P4-1）
+## 桌面常驻壳（Tauri，P4-6）
 
-- 出包只走 `scripts/package.mjs`（`pnpm package:win|linux|all`）。仓库里服务端**永远**是
-  `node src/index.ts` 无编译直跑；esbuild 只在出包时把它打成自包含单文件。产物布局固定为
-  `app/server/server.js` + `app/web/dist`（+ `app/public` 兜底），与 `app.ts` 的
-  `resolveStaticRoot()` 候选顺序对齐——**改布局必须同时改那里的注释与候选顺序**。
-- **bundle 的 ESM 产物必须带 `createRequire` banner**（见 `package.mjs` 的 `banner`）。
-  fastify/avvio/ws 内部 `require("node:events")`，ESM 里没有 `require` 时 esbuild 的
-  `__require` 兜底直接抛 `Dynamic require of "..." is not supported`，表现为**启动即崩**。
-  删掉这个 banner 或把它挪出 banner（`__require` 初始化更早）都会复现。
-- **自包含检查用 esbuild metafile，不要改回正则扫产物文本**：ajv 把
-  `require("ajv/dist/runtime/uri").default` 当字符串字面量写进生成代码，文本扫描必然误报。
-  判定内建模块要同时认裸名（CJS 侧 `assert`）与 `node:` 前缀（ESM 侧 `node:assert`）。
-- Windows 包**不做 Windows 服务**（不引 nssm/WinSW）：自启 = 计划任务「登录时」调
-  `run-hidden.ps1`（Task Scheduler 没有隐藏窗口选项，直接起 node.exe 会留黑窗）。
-  配置写**数据目录**里的 `lan-drop.env`（不是程序目录），否则升级覆盖时用户配置会丢。
-  停止服务按「命令行含本包 `server.js` 路径」匹配进程——便携包可解压到任意路径。
-- Windows 侧文件约束：`.ps1` 必须 **UTF-8 with BOM**（出包时缺 BOM 直接拒绝出包；
-  用 `pnpm fix:ps1-bom` 补），`.cmd` 只写 **ASCII**（cmd.exe 在中文系统是 936 代码页，
-  中文会乱码），中文说明放 `README.txt`。`[ordered]` 不能当参数类型（整个脚本解析失败），
-  用 `[System.Collections.IDictionary]`。
-- `node.exe` 从 npmmirror 拉、校验 `SHASUMS256.txt`、缓存在 `build/cache/`；版本固定在
-  `package.mjs` 的 `BUNDLED_NODE_VERSION`，升它要顺带更新 `VERSION` 说明。
-- 验收走 `scripts/verify-package.mjs`：解压**真包**→包内产物启动→67 项 smoke，并额外检查
-  前端产物被托管（不是兜底冒烟页）、Linux 可执行位/`sh -n`/unit 路径、Windows 包 `.ps1`
-  过真实 PowerShell 解析器、win 包 `node.exe` 在真实 Windows 上启动。**防火墙规则与
-  登录自启任务的真实注册不在自动化范围内**（会改动本机系统），改动 install 脚本后要人工确认。
-- WSL 互操作细节：`powershell.exe` 从 Node 调用时中文输出是 GBK，脚本里先设
-  `[Console]::OutputEncoding = [Text.Encoding]::UTF8`；`Start-Process`/`*>` 重定向**不会**
-  创建目录，日志目录要先建好，否则现象是「服务端一行日志都没有」。
+- 形态：`apps/desktop` 的 **Tauri 2.x 托盘壳，无窗口**。服务端不重写，以 sidecar 内嵌：
+  release 用包内 `binaries/node`（v24.20.0，npmmirror 下载 + sha256 校验）跑 esbuild 自包含的
+  `resources/server/server.js`（`createRequire` banner + metafile 自包含检查，与已删除的便携包
+  流水线同一套，见 `apps/desktop/scripts/prepare-resources.mjs`）；debug 用 PATH 里的 node 直跑
+  `LAN_DROP_DEV_ENTRY` 指向的 `apps/server/src/index.ts`。
+- 资源布局必须与 `app.ts` 的 `resolveStaticRoot()` 候选顺序对齐：`resources/server/server.js` +
+  `resources/web/dist`（server.js 上级的 web/dist 命中第二个候选）。改布局必须同时改那里的注释。
+- **运行时路径三件事（都实测踩过）**：① `shell.sidecar()` 按 **exe 同级扁平名**解析
+  （`sidecar("node")`）；externalBin 配置里的 `binaries/node` 只是打包器源路径，传它会找
+  `exe_dir/binaries/node.exe`（os error 3）。② 别用 `resource_dir()`——裸跑（target/release
+  直开）时解析出盘符根 `C:`，node 报 EISDIR；用 `current_exe()` 同级（裸跑与安装后布局一致）。
+  ③ NSIS currentUser 安装目录 `%LOCALAPPDATA%\LAN-Drop` 与服务端默认数据根**撞目录**（卸载会
+  误删数据），壳已注入 `LAN_DROP_DATA_ROOT=%LOCALAPPDATA%\LAN-Drop-Data`（用户显式设置时不覆盖）。
+- **构建只在 Windows 侧做**：MSVC（VS 18 BuildTools）与 WebView2 运行时本机已有；crates 走 rsproxy
+  sparse。**构建树必须复制到 C: 盘**——仓库在 WSL 文件系统上，从 Windows 侧按 \\\\wsl.localhost 路径
+  构建，9P I/O 会让 cargo 慢到不可用。构建目录 `C:\Users\illag\.lan-drop-desktop-build`（
+  `build.cmd` 一键跑 tauri build，NSIS 出安装包），产物拷回仓库 `dist/`。
+- `@tauri-apps/cli` 2.12 起平台包里是 `.node` 原生插件（`cli.win32-x64-msvc.node`），**没有独立
+  exe**：在 Windows 侧 `npm install --registry=https://registry.npmmirror.com @tauri-apps/cli@2`
+  （不动全局 registry 配置），用本机 node 跑 `tauri.js`。
+- 壳的行为约定：`single-instance` 插件必须最先注册（第二次启动=打开控制台，绝不出现第二个
+  sidecar）；sidecar 意外退出时壳 `exit(1)`（`killed_by_us` 标记防止主动退出被 Terminated 事件
+  误报成异常退出）；sidecar 的 stdout/stderr 落应用日志目录 `server-sidecar.log`（Windows：
+  `%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\`）。
+- 图标：`apps/desktop/scripts/make-icon.mjs` 用 SDF + 亚采样手写 PNG（纯 node:zlib，不引图像库），
+  再 `pnpm dlx @tauri-apps/cli icon` 生成全套；改图标先改脚本再重生成。
+- 防火墙仍走 `scripts/windows-allow-lan.ps1`（管理员执行一次：TCP 8787 + UDP 8788）；Tauri
+  安装包不代做防火墙规则。
+- **便携包（P4-1）已随桌面壳放弃**：`scripts/package.mjs`、`scripts/verify-package.mjs`、
+  `packaging/` 已删除（git 历史可考）；esbuild bundle 的要点（createRequire banner、metafile
+  自包含检查、node.exe 镜像下载与校验）全部延续在 `prepare-resources.mjs`。
 
 ### 系统分享面板与多选批量（P4-2）
 
@@ -147,7 +149,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 
 ### 时间线图片缩略图（P4-3）
 
-- **服务端没有、也不该有缩略图接口**：便携包是 esbuild 打出的自包含单文件，`sharp` 这类原生
+- **服务端没有、也不该有缩略图接口**：桌面壳里的服务端是 esbuild 打出的自包含单文件，`sharp` 这类原生
   图像库进不去。所以「服务端有」的那条路是**拉原图 + 本地降采样**，缩略图逻辑因此全在客户端
   （`media/ThumbnailLoader.kt`）。三条随之而来的约束：只在该行被组合时取（LazyColumn 天生如此，
   滑走即取消）、结果按 `fileId@档位` 落盘缓存、并发上限 2（别和用户正在传的文件抢带宽）。
@@ -299,5 +301,5 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - 提交与 tag 一律 GPG 签名（指纹 `D2E7DBACB6E233780954B2DEF09BEB5215872019`，无口令，可静默签）；推送必须用 GitHub 隐私邮箱 `63698328+illagerCPR@users.noreply.github.com`。
 - 源码标识符全英文，禁拼音。
 - 每完成一项功能同步更新 `README.md` 与 `docs/技术选型与开发计划.md`，文档与实现脱节视为未完成。
-- `scripts/windows-allow-lan.ps1` 必须保持 **UTF-8 with BOM**：PS 5.1 对无 BOM 文件按 ANSI/GBK 解码，中文字符串会破坏语法；也不要手工另存为 ANSI（依赖系统区域设置）。`packaging/windows/*.ps1` 同样是硬要求：出包脚本遇到缺 BOM 直接拒绝出包，用 `pnpm fix:ps1-bom` 补齐（`--check` 只检查）。
+- `scripts/windows-allow-lan.ps1` 必须保持 **UTF-8 with BOM**：PS 5.1 对无 BOM 文件按 ANSI/GBK 解码，中文字符串会破坏语法；也不要手工另存为 ANSI（依赖系统区域设置）。用 `pnpm fix:ps1-bom` 补齐（`--check` 只检查）。
 - 需要 sudo 提权时找用户执行；**不准使用 snap 安装**。

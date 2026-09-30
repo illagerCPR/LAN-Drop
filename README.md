@@ -41,13 +41,13 @@ Edge Drop 下线后，在自家局域网里「电脑 ↔ 手机」随手丢一�
 LAN-Drop/
 ├─ apps/
 │  ├─ server/            Node + TypeScript 服务端（HTTP / WS / SQLite / 文件流）
-│  └─ web/               Vite + React + TypeScript（PC 主界面 + 手机 PWA 兜底）
+│  ├─ web/               Vite + React + TypeScript（PC 主界面 + 手机 PWA 兜底）
+│  └─ desktop/           Tauri 2.x 桌面常驻壳（Rust 托盘 + Node sidecar）
 ├─ packages/
 │  └─ protocol/          协议单一事实源（TS 类型 + JSON Schema）
 ├─ android/              Kotlin + Jetpack Compose 客户端（独立 Gradle 构建）
-├─ packaging/            便携包的安装脚本与说明（windows/ 与 linux/）
 ├─ docs/                 技术选型、协议、路线图
-└─ scripts/              环境准备、Windows 防火墙、出包与打包验收
+└─ scripts/              环境准备、Windows 防火墙、smoke 冒烟
 ```
 
 ## 技术栈
@@ -56,6 +56,7 @@ LAN-Drop/
 | --- | --- |
 | 服务端 | Node.js 24 + TypeScript + Fastify + `ws` + `node:sqlite` |
 | 前端 | Vite + React + TypeScript |
+| 桌面壳 | Tauri 2.x（Rust 托盘，无窗口；Node 服务端以 sidecar 内嵌，NSIS 安装包） |
 | Android | Kotlin + Jetpack Compose + Material 3 + Room + OkHttp + kotlinx.serialization |
 | 传输 | 局域网 HTTP(S) + WebSocket，二维码/UDP 广播发现，Token 配对 |
 | 数据根 | Linux `~/.local/share/lan-drop`；Windows `%LOCALAPPDATA%\LAN-Drop` |
@@ -95,10 +96,10 @@ pnpm -r test                                     # TS 侧：34 项（node --test
 adb pair <手机IP>:<配对端口> <6 位配对码>
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
-# 9) 出便携包（Windows zip / Linux tar.gz，产物在 dist/）
-pnpm package:all            # 默认先重建 web，再打服务端 bundle，最后组装两个平台包
-pnpm verify:package         # 验收 Linux 包：解压 → 用包内产物启动 → 跑 67 项 smoke
-node scripts/verify-package.mjs --target win   # 验收 Windows 包：真实 Windows 进程跑 smoke
+# 9) 桌面端安装包（Tauri NSIS，产物在 dist/）
+pnpm desktop:resources      # esbuild 打服务端 bundle（metafile 自包含检查）+ 拷 web/dist + 拉 sidecar node.exe
+# 随后在 Windows 侧构建（构建树复制到 C: 盘，Windows 本机 node 跑 @tauri-apps/cli build），
+# 详见下文「桌面端（Tauri 常驻壳）与部署」小节
 ```
 
 依赖源已固化到国内镜像（见 `.npmrc`、`android/settings.gradle.kts`、
@@ -116,11 +117,11 @@ KSP 2.3.12 / compileSdk 37 / minSdk 33），**改动前请先读
 - **P1** 服务端核心 + Web UI ✅（手机 ↔ PC 已实测互发文字与文件；大文件项以 ~180 MB 视频代替验收）
 - **P2** Android 原生客户端 MVP ✅（配对、时间线、文字、文件收发、Room 离线缓存）
 - **P3** 断点续传 ✅（暂停/继续/崩溃恢复）· 前台服务 + 通知 ✅（息屏续传）· UDP 自动发现 ✅（扫描配对 + 断线找回）· 自动接收文件 ✅（默认关）· 摄像头扫码 ✅ · 系统分享面板与缩略图移至 P4
-- **P4** 便携打包 ✅（Windows zip / Linux tar.gz + systemd user unit）· 系统分享面板 + 多选批量 ✅ · 时间线缩略图 ✅ · 传输暂停/继续 + 链接可点 ✅ · 消息保留策略 ✅ · 边界用例与可选 TLS
+- **P4** 桌面常驻壳（Tauri 托盘 + Node sidecar）✅ · 系统分享面板 + 多选批量 ✅ · 时间线缩略图 ✅ · 传输暂停/继续 + 链接可点 ✅ · 消息保留策略 ✅ · 边界用例与可选 TLS
 
 详见 [docs/技术选型与开发计划.md](docs/技术选型与开发计划.md)。
 
-## 当前进度：P1 / P2 / P3 全部 / P4-1 至 P4-5 均已验收通过
+## 当前进度：P1 / P2 / P3 全部 / P4-2 至 P4-6 已验收通过（P4-1 便携包曾交付，随桌面壳落地放弃）
 
 ### 服务端展示名
 
@@ -322,55 +323,41 @@ TS 侧另有 26 项单测：`pnpm -r test`（15 项链接规则 + 11 项上传�
 | 基准点之前的历史文件 | ✅ 不被自动下载 |
 | 开关状态 | ✅ 落盘持久化，重启应用后保持 |
 
-## 便携打包与部署
+## 桌面端（Tauri 常驻壳）与部署
 
-出包流水线（`scripts/package.mjs`）做三件事：重建前端 → esbuild 把服务端打成自包含单文件
-`server.js` → 组装各平台目录并压缩。**编译只发生在出包时**：仓库里开发照旧 `node src/index.ts`
-无编译直跑，目标机上也不需要 node_modules。
+PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口，点「打开控制台」在浏览器里用 Web UI。
+服务端不是 Rust 重写，而是现有 Node 服务端以 **sidecar** 方式内嵌——安装包里带
+`node.exe`（v24.20.0，npmmirror 下载 + sha256 校验）、esbuild 打出的自包含 `server.js`
+（与当年便携包同一套 createRequire banner + metafile 自包含检查）和 `web/dist`。
+数据目录沿用服务端默认（Windows `%LOCALAPPDATA%\LAN-Drop`），配对数据与开发态天然延续。
 
-| 平台 | 产物 | 运行时 | 自启 |
-| --- | --- | --- | --- |
-| Windows | `dist/lan-drop-<版本>-win-x64.zip`（33.8 MB，含 89 MB node.exe 压缩后） | 包内 `node/node.exe`，目标机不需要装 Node | 计划任务「登录时」+ 无窗口封装 |
-| Linux | `dist/lan-drop-<版本>-linux-x64.tar.gz`（0.4 MB） | 系统 Node ≥ 24（或自备 `node/node`） | systemd user unit |
-
-两端包内布局一致：
-
-```
-lan-drop-<版本>-<平台>-x64/
-├─ app/server/server.js   服务端单文件产物（全部依赖已内联，自包含检查在出包时强制）
-├─ app/web/dist/          浏览器界面
-├─ app/public/            前端未构建时的兜底冒烟页
-├─ node/                  Windows 包内置的 node.exe
-├─ VERSION                版本、commit、构建时间
-└─ README / install / start / stop / status / uninstall
-```
-
-**程序与数据分离**：升级 = 覆盖程序目录，数据与配置都在数据侧——Windows 是
-`%LOCALAPPDATA%\LAN-Drop`（配置 `lan-drop.env`、数据库、文件、日志同目录），
-Linux 是 `~/.local/share/lan-drop` 加 `~/.config/lan-drop/env`。
-
-- **Windows 三步部署**：解压 → 右键 `install.ps1`「以管理员身份运行」→ 手机 App 点
-  「扫描局域网」选中本机、输入配对码。安装脚本负责防火墙（TCP 8787 + UDP 8788，来源限本地子网）、
-  写配置、注册登录自启、启动并打印手机地址与配对码。刻意**不做 Windows 服务**（不引 nssm/WinSW）：
-  自启用任务计划程序，进程就是普通用户进程；日志落 `logs\server.log`，`status.cmd` 一眼看全状态。
-- **Linux 部署**：`./install.sh` 装成 systemd 用户服务（不需要 root）；要开机（未登录也）常驻，
-  再执行一次 `sudo loginctl enable-linger $USER`——这一步需要提权，脚本只提示、不代劳。
-
-**验收不信任「源码能跑」**：`scripts/verify-package.mjs` 解压真正的发布包、用包内产物启动，
-再对包内服务端跑完整的 67 项 smoke。除此之外它还专门盯住几件光看状态码发现不了的事：
-
-| 检查 | 为什么必须查 |
+| 产物 | 说明 |
 | --- | --- |
-| 托管的是真前端产物而非兜底冒烟页 | 静态目录解析写错时两者都「能打开」，界面却不对 |
-| Linux 包可执行位、`sh -n`、`--dry-run` 生成的 unit 路径 | tar 丢权限位、模板替换写错都只在目标机暴露 |
-| Windows 包的 `.ps1` 过**真实 PowerShell 解析器** | 语法错（如 `[ordered]` 当参数类型）在 Linux 上根本看不出来 |
-| 防火墙 / 计划任务 cmdlet 参数存在性 | `-LocalPorts` 这类拼错的参数只在用户机器上装到最后一步才炸 |
-| Windows 包 `install.ps1` 试跑（`-NoFirewall -NoAutostart -NoStart`） | 「解析通过」不等于「能跑」：点源、StrictMode、中文输出编码、提权闸门都要真跑一次 |
-| Windows 包内置 `node.exe` 在**真实 Windows** 启动并跑同一套 smoke | 打包与真实运行时环境的差异只有真跑才暴露 |
+| `dist/LAN-Drop_<版本>_x64-setup.exe` | Windows 安装包（NSIS，用户级安装，内置 node.exe 与前端产物） |
 
-2026-09-30 实测结论：Linux 包与 Windows 包双双通过上述验收（各含 67 项 smoke）。
-防火墙规则与登录自启任务的**真实注册**未自动验证（会改动本机系统），留待目标机人工确认。
+- **托盘**：左键=打开控制台；菜单=打开控制台 / 开机自启（写 HKCU Run，用户级）/ 退出。
+- **单实例**：重复启动不出现第二个 sidecar，第二次启动直接把控制台拉起来。
+- **生命周期**：退出时随杀 sidecar；服务端意外退出时壳随之退出（exit 1）。
+  sidecar 日志：`%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\server-sidecar.log`。
+- **构建**（`pnpm desktop:resources` 之后在 Windows 侧）：
 
+  ```
+  pnpm desktop:resources     # ① esbuild bundle + web/dist + node.exe → apps/desktop/src-tauri/{resources,binaries}
+  # ② 把 apps/desktop/src-tauri 复制到 C: 盘构建目录（WSL 的 /mnt/c 9P 反向 I/O 跑不动 cargo）
+  # ③ Windows 本机 node 跑 @tauri-apps/cli build（CLI 平台包是 .node 原生插件，没有独立 exe）
+  # ④ 产物 src-tauri/target/release/bundle/nsis/*.exe 拷回仓库 dist/
+  ```
+
+- **部署**：双击安装包 → 托盘出现 LAN-Drop → 打开控制台配对。防火墙规则仍用
+  `scripts/windows-allow-lan.ps1`（管理员执行一次：TCP 8787 + UDP 8788）——安装包不代做防火墙。
+- **便携包已放弃**（2026-09-30）：Tauri 自带安装包与 WebView2 引导后，zip 便携包的 node.exe 组装、
+  install.ps1 与双平台验收脚本不再维护（`scripts/package.mjs`、`scripts/verify-package.mjs`、
+  `packaging/` 已删除，git 历史可考）。数据目录约定不变。
+
+**验收记录（2026-09-30，Windows 开发机）：** 安装包 25.4 MB；安装版 sidecar 监听 8787
+（healthz / info / 控制台 HTML 全部应答）；数据目录与安装目录分离（`LAN-Drop-Data`，卸载不碰
+数据）；杀 sidecar → 壳退出（exit 1）有日志证据；单实例验证通过。托盘行为（图标/菜单/退出/自启）
+无自动化通道，待用户目视确认。
 ## 系统分享面板与多选批量
 
 手机相册里选中照片 → 分享 → **LAN-Drop**，或在应用内点「文件」一次选多个一起发。
@@ -466,7 +453,7 @@ Linux 是 `~/.local/share/lan-drop` 加 `~/.config/lan-drop/env`。
 `image/` 开头的文件消息在手机时间线里直接出图（点图＝下载；已下载的点图交给系统查看器），
 Web 控制台早先就有内嵌预览，这次补的是 Android 侧。
 
-**服务端不做缩略图接口**，这不是偷懒：便携包是 esbuild 打出的自包含单文件，塞不进
+**服务端不做缩略图接口**，这不是偷懒：桌面壳里的服务端是 esbuild 打出的自包含单文件，塞不进
 `sharp` 这类原生图像库，所以「服务端有」的那条路是**拉原图、本地降采样**。
 由此定了三条工程约束：只在行真的被组合时取（LazyColumn 天生如此，滑走即取消）、
 结果按 `fileId` 落盘缓存（存的是**缩小后的图**，几十 KB，不是相册级原图）、并发上限 2

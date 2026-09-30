@@ -24,20 +24,33 @@
   （latestSeq 归零触发）。真机 E2E 两次：时间线清空 + 提示，随后消息从服务端重新拉回；
   第二次在服务端数据清空后执行，结果停在「还没有消息」，两端一致。
 
-## P4-1 便携包人工项（自动化覆盖不到，需要真 Windows）
+## 便携包（P4-1，已放弃）
 
-- [ ] 在**非开发机**的真实 Windows 上人工执行一次防火墙放行（`scripts/windows-allow-lan.ps1`）
-  并注册登录自启计划任务，确认 install 脚本的注册效果——真实注册会改动系统，
-  刻意不在自动化范围内（开发机已执行过放行）。
-- [ ] **第二台干净 Windows PC** 的便携包验收（当前只在开发机验证过）。
+- [x] ~~便携包（Windows zip / Linux tar.gz + systemd unit）~~：2026-09-30 交付双平台验收；
+  同日决策记录 #8 落地（桌面常驻壳）后**放弃**——Tauri 自带安装包与 WebView2 引导，zip 便携包的
+  node.exe 组装、install.ps1 与双平台验收脚本不再维护（`scripts/package.mjs`、
+  `scripts/verify-package.mjs`、`packaging/` 已删除，git 历史可考；esbuild 自包含 bundle 的
+  要点延续在桌面壳的 `prepare-resources.mjs` 里）。
 
-## 已选型（待实施）
+## 桌面常驻壳（2026-09-30 完成）
 
-- [ ] **准备 Rust 工具链，PC 服务端程序使用 Tauri**（决策记录 #8 由「可选项」升级为「已选型」）：
-  1. 安装 rustup + stable 工具链，走国内镜像（rsproxy.cn），理由与 npm/Gradle 换源相同；
-  2. 确定 PC 常驻程序形态：Tauri 2.x 托盘壳是默认候选，现有 Node 服务端以 sidecar
-     方式集成（Rust 重写服务端是另一个量级的工程，不随本条目默认发生）；
-  3. 明确与 P4-1 便携包的关系：Tauri 自带安装包/更新体系，当前 zip 便携包是否保留待定。
+- [x] **准备 Rust 工具链，PC 服务端程序使用 Tauri**（决策记录 #8 落地；实现与验收详见
+  [计划文档 P4-6](技术选型与开发计划.md)）：
+  1. Rust 工具链 ✅——Windows 侧 stable-msvc 1.97.1 + VS 18 BuildTools + WebView2（本机已有）；
+     WSL 侧补装 rustup + stable 1.98.1（rustup dist 走 TUNA：rsproxy 的 rustup dist 镜像缺
+     channel 清单，实测 404）。crates.io sparse 索引走 rsproxy（Windows 侧
+     `C:\Users\illag\.cargo\config.toml`）。
+  2. PC 常驻程序形态 ✅——`apps/desktop`：Tauri 2.12 托盘壳（无窗口；托盘菜单 = 打开控制台 /
+     开机自启 / 退出），Node 服务端以 sidecar 内嵌（node.exe v24.20.0 + esbuild 自包含
+     server.js），Rust 重写服务端不在本条目范围。
+  3. 与便携包的关系 ✅——**放弃便携包**，分发走 Tauri NSIS 安装包。
+
+  真机验收（Windows 开发机）：`tauri build` 出 `LAN-Drop_0.1.0_x64-setup.exe`（25.4 MB）；
+  程序目录（`%LOCALAPPDATA%\LAN-Drop`）与数据根（`%LOCALAPPDATA%\LAN-Drop-Data`，壳注入
+  `LAN_DROP_DATA_ROOT`）分离，卸载不碰数据；sidecar 拉起 node 监听 8787，healthz / 控制台 /
+  pino 日志落 `server-sidecar.log` 全部验证；杀 sidecar → 壳随之退出（exit 1）有日志证据；
+  单实例（第二次启动无第二个 sidecar）。托盘图标/菜单/退出/自启的目视确认待用户。
+- [ ] Linux/macOS 桌面壳构建：需要系统级 webkit2gtk 等依赖（涉及 sudo），待有需求时再补。
 
 ## 可选增强（规划内，未排期）
 
