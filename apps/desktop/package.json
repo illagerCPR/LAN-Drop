@@ -6,5 +6,8 @@
   "scripts": {
     "resources": "node scripts/prepare-resources.mjs",
     "icon": "node scripts/make-icon.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0"
   }
 }

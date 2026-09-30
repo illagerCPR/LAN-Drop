@@ -1,4 +1,5 @@
-# 构建产物与资源全部不进库（资源由 scripts/prepare-resources.mjs 生成）
+# 构建产物与资源全部不进库（资源由 scripts/prepare-resources.mjs 生成；gen/ 是 tauri 生成的 schema/ACL）
 src-tauri/target/
 src-tauri/binaries/
 src-tauri/resources/
+src-tauri/gen/

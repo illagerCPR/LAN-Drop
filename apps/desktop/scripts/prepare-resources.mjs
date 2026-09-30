@@ -7,7 +7,9 @@
  * 产出（全部落在 src-tauri/ 下，git 忽略，构建时打进安装包）：
  *   - resources/server/server.js   esbuild 打包的自包含服务端 bundle
  *   - resources/web/dist/          浏览器控制台前端产物
- *   - binaries/node-x86_64-pc-windows-msvc.exe   sidecar 用的 node 运行时（npmmirror 下载 + sha256 校验）
+ *   - binaries/node-x86_64-pc-windows-msvc.exe   Windows 构建的 sidecar node
+ *   - binaries/node-x86_64-unknown-linux-gnu     Linux 构建的 sidecar node
+ *   （按运行本脚本的平台自动选择，不做交叉；npmmirror 下载 + SHASUMS256.txt 校验）
  *
  * 资源布局与服务端 app.ts 的 resolveStaticRoot() 候选顺序对齐：
  * server.js 所在目录的上级找 web/dist —— 即 resources/server/server.js + resources/web/dist。
@@ -17,7 +19,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -35,6 +37,7 @@ const cacheDir = join(repoRoot, "build", "cache");
 const BUNDLED_NODE_VERSION = process.env.LAN_DROP_NODE_VERSION ?? "24.20.0";
 const NODE_MIRROR = "https://registry.npmmirror.com/-/binary/node";
 const WINDOWS_TARGET_TRIPLE = "x86_64-pc-windows-msvc";
+const LINUX_TARGET_TRIPLE = "x86_64-unknown-linux-gnu";
 
 /** fastify/ws 生态的可选原生加速模块：装了才 require，未装自动降级，绝不打包。 */
 const OPTIONAL_NATIVES = ["bufferutil", "utf-8-validate"];
@@ -108,25 +111,24 @@ async function copyWebDist() {
   log("已拷贝 web/dist 控制台前端");
 }
 
-/** 下载（或复用 build/cache）Windows 版 node，供 sidecar externalBin 使用。 */
-async function fetchWindowsNode(version) {
-  const zipName = `node-v${version}-win-x64.zip`;
-  const zipPath = join(cacheDir, zipName);
+/** 下载（或复用 build/cache）node 官方分发包，并对照同目录 SHASUMS256.txt 校验 sha256。 */
+async function fetchNodeDistribution(version, archiveName) {
+  const archivePath = join(cacheDir, archiveName);
   await mkdir(cacheDir, { recursive: true });
 
-  if (!existsSync(zipPath)) {
-    const url = `${NODE_MIRROR}/v${version}/${zipName}`;
+  if (!existsSync(archivePath)) {
+    const url = `${NODE_MIRROR}/v${version}/${archiveName}`;
     log(`下载 sidecar node：${url}`);
     const response = await fetch(url);
     if (!response.ok) throw new Error(`下载 node 失败：HTTP ${response.status} ${url}`);
     const buffer = Buffer.from(await response.arrayBuffer());
-    await writeFile(zipPath, buffer);
+    await writeFile(archivePath, buffer);
 
     const digest = createHash("sha256").update(buffer).digest("hex");
     try {
       const shasums = await fetch(`${NODE_MIRROR}/v${version}/SHASUMS256.txt`);
       if (shasums.ok) {
-        const line = (await shasums.text()).split("\n").find((row) => row.trim().endsWith(zipName));
+        const line = (await shasums.text()).split("\n").find((row) => row.trim().endsWith(archiveName));
         const expected = line?.trim().split(/\s+/)[0];
         if (expected && expected !== digest) {
           throw new Error(`node 分发包校验和不匹配：期望 ${expected}，实际 ${digest}`);
@@ -140,13 +142,18 @@ async function fetchWindowsNode(version) {
       log(`  校验步骤出错，跳过：${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
-    log(`复用缓存的 node 分发包：${zipName}`);
+    log(`复用缓存的 node 分发包：${archiveName}`);
   }
+  return archivePath;
+}
 
+/** Windows 版 node：zip 包里的 node.exe。 */
+async function fetchWindowsNode(version) {
+  const archivePath = await fetchNodeDistribution(version, `node-v${version}-win-x64.zip`);
   await rm(join(cacheDir, "node.exe"), { force: true });
   const extract = spawnSync(
     "unzip",
-    ["-o", "-j", zipPath, `node-v${version}-win-x64/node.exe`, "-d", cacheDir],
+    ["-o", "-j", archivePath, `node-v${version}-win-x64/node.exe`, "-d", cacheDir],
     { stdio: "ignore" },
   );
   if (extract.error) throw extract.error;
@@ -156,14 +163,56 @@ async function fetchWindowsNode(version) {
   return nodeExe;
 }
 
+/** Linux 版 node：tar.xz 包里的 bin/node（--strip-components 去掉包内三级目录）。 */
+async function fetchLinuxNode(version) {
+  const archivePath = await fetchNodeDistribution(version, `node-v${version}-linux-x64.tar.xz`);
+  await rm(join(cacheDir, "node"), { force: true });
+  const extract = spawnSync(
+    "tar",
+    [
+      "-xJf",
+      archivePath,
+      "-C",
+      cacheDir,
+      `node-v${version}-linux-x64/bin/node`,
+      // 包内路径 node-v<ver>/bin/node 共 3 层，剥前 2 层后落盘为 ./node；
+      // 剥 3 层会把文件名本身也剥掉（tar 会静默跳过空路径成员）。
+      "--strip-components=2",
+    ],
+    { stdio: "ignore" },
+  );
+  if (extract.error) throw extract.error;
+  if (extract.status !== 0) throw new Error(`tar 提取 node 失败（exit ${extract.status}）`);
+  const nodeBinary = join(cacheDir, "node");
+  if (!existsSync(nodeBinary)) throw new Error("从 tar.xz 里没提取到 node");
+  return nodeBinary;
+}
+
+/** 在哪个平台构建就取哪边的 node：sidecar 必须与主程序同平台，不做交叉。 */
+function sidecarPlatform() {
+  switch (process.platform) {
+    case "win32":
+      return { os: "windows", triple: WINDOWS_TARGET_TRIPLE, suffix: ".exe" };
+    case "linux":
+      return { os: "linux", triple: LINUX_TARGET_TRIPLE, suffix: "" };
+    default:
+      throw new Error(`暂不支持在 ${process.platform} 上构建桌面壳 sidecar`);
+}
+}
+
 async function placeSidecarNode() {
-  const nodeExe = await fetchWindowsNode(BUNDLED_NODE_VERSION);
+  const platform = sidecarPlatform();
+  const nodeBinary =
+    platform.os === "windows"
+      ? await fetchWindowsNode(BUNDLED_NODE_VERSION)
+      : await fetchLinuxNode(BUNDLED_NODE_VERSION);
   await mkdir(binariesDir, { recursive: true });
-  const target = join(binariesDir, `node-${WINDOWS_TARGET_TRIPLE}.exe`);
+  const target = join(binariesDir, `node-${platform.triple}${platform.suffix}`);
   await rm(target, { force: true });
-  await cp(nodeExe, target);
+  await cp(nodeBinary, target);
+  await chmod(target, 0o755); // Windows 忽略；Linux 的 fs.cp 不保留执行位，必须补
   const size = (await stat(target)).size;
-  log(`sidecar node：binaries/node-${WINDOWS_TARGET_TRIPLE}.exe（${(size / 1024 / 1024).toFixed(0)} MB，v${BUNDLED_NODE_VERSION}）`);
+  log(`sidecar node：binaries/node-${platform.triple}${platform.suffix}（${(size / 1024 / 1024).toFixed(0)} MB，v${BUNDLED_NODE_VERSION}，${platform.os}）`);
 }
 
 const commit = await gitShortSha();

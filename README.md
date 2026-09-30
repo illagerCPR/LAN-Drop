@@ -56,7 +56,7 @@ LAN-Drop/
 | --- | --- |
 | 服务端 | Node.js 24 + TypeScript + Fastify + `ws` + `node:sqlite` |
 | 前端 | Vite + React + TypeScript |
-| 桌面壳 | Tauri 2.x（Rust 托盘，无窗口；Node 服务端以 sidecar 内嵌，NSIS 安装包） |
+| 桌面壳 | Tauri 2.x（Rust 托盘，无窗口；Node 服务端以 sidecar 内嵌；Windows NSIS 安装包 / Linux AppImage） |
 | Android | Kotlin + Jetpack Compose + Material 3 + Room + OkHttp + kotlinx.serialization |
 | 传输 | 局域网 HTTP(S) + WebSocket，二维码/UDP 广播发现，Token 配对 |
 | 数据根 | Linux `~/.local/share/lan-drop`；Windows `%LOCALAPPDATA%\LAN-Drop` |
@@ -96,9 +96,10 @@ pnpm -r test                                     # TS 侧：34 项（node --test
 adb pair <手机IP>:<配对端口> <6 位配对码>
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
-# 9) 桌面端安装包（Tauri NSIS，产物在 dist/）
-pnpm desktop:resources      # esbuild 打服务端 bundle（metafile 自包含检查）+ 拷 web/dist + 拉 sidecar node.exe
-# 随后在 Windows 侧构建（构建树复制到 C: 盘，Windows 本机 node 跑 @tauri-apps/cli build），
+# 9) 桌面端（Tauri；产物在 dist/：Windows NSIS 安装包 / Linux AppImage）
+pnpm desktop:resources      # esbuild 打服务端 bundle（metafile 自包含检查）+ 拷 web/dist + 按平台拉 sidecar node
+# Windows 侧：构建树复制到 C: 盘，Windows 本机 node 跑 @tauri-apps/cli build（NSIS）
+# Linux 侧（WSL）：装 4 个系统包后 tauri build --bundles appimage
 # 详见下文「桌面端（Tauri 常驻壳）与部署」小节
 ```
 
@@ -326,20 +327,23 @@ TS 侧另有 26 项单测：`pnpm -r test`（15 项链接规则 + 11 项上传�
 ## 桌面端（Tauri 常驻壳）与部署
 
 PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口，点「打开控制台」在浏览器里用 Web UI。
-服务端不是 Rust 重写，而是现有 Node 服务端以 **sidecar** 方式内嵌——安装包里带
-`node.exe`（v24.20.0，npmmirror 下载 + sha256 校验）、esbuild 打出的自包含 `server.js`
-（与当年便携包同一套 createRequire banner + metafile 自包含检查）和 `web/dist`。
-数据目录沿用服务端默认（Windows `%LOCALAPPDATA%\LAN-Drop`），配对数据与开发态天然延续。
+服务端不是 Rust 重写，而是现有 Node 服务端以 **sidecar** 方式内嵌——包里带 node 运行时
+（v24.20.0，npmmirror 下载 + sha256 校验，Windows `node.exe` / Linux `node`）、esbuild 打出的
+自包含 `server.js`（与当年便携包同一套 createRequire banner + metafile 自包含检查）和 `web/dist`。
+数据目录：Windows 安装版由壳注入 `LAN_DROP_DATA_ROOT` 挪到 `%LOCALAPPDATA%\LAN-Drop-Data`
+（NSIS 卸载会清安装目录，数据必须分家）；Linux 沿用服务端默认 `~/.local/share/lan-drop`，
+配对数据与开发态天然延续。
 
 | 产物 | 说明 |
 | --- | --- |
 | `dist/LAN-Drop_<版本>_x64-setup.exe` | Windows 安装包（NSIS，用户级安装，内置 node.exe 与前端产物） |
+| `dist/LAN-Drop_<版本>_amd64.AppImage` | Linux 便携可执行（免安装；运行需 FUSE 或 `--appimage-extract-and-run`） |
 
 - **托盘**：左键=打开控制台；菜单=打开控制台 / 开机自启（写 HKCU Run，用户级）/ 退出。
 - **单实例**：重复启动不出现第二个 sidecar，第二次启动直接把控制台拉起来。
 - **生命周期**：退出时随杀 sidecar；服务端意外退出时壳随之退出（exit 1）。
   sidecar 日志：`%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\server-sidecar.log`。
-- **构建**（`pnpm desktop:resources` 之后在 Windows 侧）：
+- **构建（Windows，NSIS）**（`pnpm desktop:resources` 之后在 Windows 侧）：
 
   ```
   pnpm desktop:resources     # ① esbuild bundle + web/dist + node.exe → apps/desktop/src-tauri/{resources,binaries}
@@ -347,6 +351,20 @@ PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口�
   # ③ Windows 本机 node 跑 @tauri-apps/cli build（CLI 平台包是 .node 原生插件，没有独立 exe）
   # ④ 产物 src-tauri/target/release/bundle/nsis/*.exe 拷回仓库 dist/
   ```
+
+- **构建（Linux，AppImage；WSL 里直接做——仓库就是本地 I/O，不用复制构建树）**：
+
+  ```
+  sudo apt install libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+  pnpm desktop:resources                                              # ① 按运行平台自动取 Linux node（v24.20.0）
+  pnpm --filter @lan-drop/desktop exec tauri build --bundles appimage # ② @tauri-apps/cli 已在 devDependencies
+  # ③ 产物 src-tauri/target/release/bundle/appimage/*.AppImage 拷回仓库 dist/
+  ```
+
+  注意：**Linux 的 resources 落点与 Windows 不同**（AppRun 布局：sidecar node 在 exe 同级
+  `usr/bin/`，`server/server.js` 与 `web/dist` 在 `usr/lib/LAN-Drop/`），壳内按存在性双候选探测。
+  WSLg 没有系统托盘——托盘目视项只能在真 Linux 桌面验证，壳对「托盘初始化失败」已做降级
+  （无托盘继续跑，仅 Linux 分支）。
 
 - **部署**：双击安装包 → 托盘出现 LAN-Drop → 打开控制台配对。防火墙规则仍用
   `scripts/windows-allow-lan.ps1`（管理员执行一次：TCP 8787 + UDP 8788）——安装包不代做防火墙。
@@ -358,6 +376,13 @@ PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口�
 （healthz / info / 控制台 HTML 全部应答）；数据目录与安装目录分离（`LAN-Drop-Data`，卸载不碰
 数据）；杀 sidecar → 壳退出（exit 1）有日志证据；单实例验证通过。托盘行为（图标/菜单/退出/自启）
 无自动化通道，待用户目视确认。
+
+**验收记录（2026-10-01，Linux / WSLg）：** AppImage 123.55 MiB；sidecar（node v24.20.0）监听 8787
+（healthz / info / 控制台 HTML 全部应答）；Linux resources 落 `usr/lib/LAN-Drop/`，壳双候选探测命中；
+pino 日志落 `~/.local/share/io.github.illagercpr.landrop.desktop/logs/`；数据根沿用
+`~/.local/share/lan-drop`（serverId 与既有 server.json 一致，手机设备行健在）；杀 sidecar → 壳退出
+（exit 1）。托盘项在 WSLg 无法目视（无系统托盘），待真 Linux 桌面确认。
+
 ## 系统分享面板与多选批量
 
 手机相册里选中照片 → 分享 → **LAN-Drop**，或在应用内点「文件」一次选多个一起发。

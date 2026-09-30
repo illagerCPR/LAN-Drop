@@ -50,7 +50,13 @@
   `LAN_DROP_DATA_ROOT`）分离，卸载不碰数据；sidecar 拉起 node 监听 8787，healthz / 控制台 /
   pino 日志落 `server-sidecar.log` 全部验证；杀 sidecar → 壳随之退出（exit 1）有日志证据；
   单实例（第二次启动无第二个 sidecar）。托盘图标/菜单/退出/自启的目视确认待用户。
-- [ ] Linux/macOS 桌面壳构建：需要系统级 webkit2gtk 等依赖（涉及 sudo），待有需求时再补。
+- [x] **Linux AppImage 桌面壳构建**（2026-10-01）：WSL 侧 `tauri build --bundles appimage` 出
+  `LAN-Drop_0.1.0_amd64.AppImage`（123.55 MiB）；前置 4 个系统包（libwebkit2gtk-4.1-dev /
+  libxdo-dev / libayatana-appindicator3-dev / librsvg2-dev，sudo 一次）；Linux node sidecar 由
+  `prepare-resources.mjs` 按运行平台自动下载校验。HTTP/进程层已机器验证（healthz / info /
+  控制台 / 日志 / 数据根 / 杀 sidecar → 壳退出）；托盘目视项需真 Linux 桌面（WSLg 无系统托盘，
+  壳已做托盘初始化失败降级）。
+- [ ] macOS 桌面壳构建：待有 macOS 机器/需求时再补。
 
 ## 可选增强（规划内，未排期）
 

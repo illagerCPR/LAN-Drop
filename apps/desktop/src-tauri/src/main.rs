@@ -154,18 +154,36 @@ fn spawn_server(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             .parent()
             .ok_or("主程序没有父目录")?
             .to_path_buf();
-        let node = exe_dir.join("node.exe");
-        let script = exe_dir.join("server").join("server.js");
-        if !node.exists() || !script.exists() {
-            return Err(format!(
-                "sidecar 资源缺失：node={} exists={}，script={} exists={}",
-                node.display(),
-                node.exists(),
-                script.display(),
-                script.exists()
-            )
-            .into());
-        }
+        // sidecar 与主程序同平台同目录：Windows 是 node.exe，Linux（AppImage 内）是 node。
+        let node = exe_dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+        // resources 落点两平台不同：Windows（NSIS/CLI）全平铺在 exe 同级；Linux（AppImage/deb
+        // 的 AppRun 布局）在 exe 的 ../lib/<productName>/ —— usr/bin/LAN-Drop 旁是 sidecar node，
+        // server/server.js 与 web/dist 却在 usr/lib/LAN-Drop/ 下。按存在性探测两条候选，
+        // 谁存在用谁（server.js 上级的 web/dist 与 resolveStaticRoot() 候选顺序天然对齐）。
+        let lib_resources = exe_dir
+            .parent()
+            .map(|prefix| prefix.join("lib").join("LAN-Drop"))
+            .unwrap_or_else(|| exe_dir.clone());
+        let script_candidates = [
+            exe_dir.join("server").join("server.js"),
+            lib_resources.join("server").join("server.js"),
+        ];
+        let script = script_candidates
+            .iter()
+            .find(|candidate| candidate.exists())
+            .ok_or_else(|| {
+                format!(
+                    "sidecar 资源缺失：node={} exists={}，server.js 两条候选均不存在：{}",
+                    node.display(),
+                    node.exists(),
+                    script_candidates
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("、")
+                )
+            })?
+            .to_path_buf();
         log.line(&format!("sidecar：{} {}", node.display(), script.display()));
         // sidecar() 解析的是 exe 同级的扁平名字：externalBin 配置里的 "binaries/node" 只是
         // 打包器的源路径（src-tauri/binaries/node-<triple>.exe），CLI/安装器都会把它平铺成
@@ -256,7 +274,7 @@ fn main() {
             let quit = MenuItem::with_id(app, "quit", "退出 LAN-Drop", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &autostart, &quit])?;
 
-            TrayIconBuilder::with_id("main-tray")
+            let tray_result = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("应用图标缺失").clone())
                 .tooltip("LAN-Drop")
                 .menu(&menu)
@@ -267,7 +285,17 @@ fn main() {
                     "quit" => app.exit(0),
                     _ => {}
                 })
-                .build(app)?;
+                .build(app);
+            // 无 StatusNotifierWatcher 的环境（WSLg、部分 Wayland 会话）里 libappindicator
+            // 初始化不了托盘。Linux 下降级为「无托盘但服务端照常常驻」——服务端可用性
+            // 优先于托盘入口，退出交由 sidecar 意外退出路径或 pkill -x LAN-Drop。
+            // Windows 不降级：托盘是唯一交互入口，失败即 setup 失败（与历史行为一致）。
+            if let Err(error) = tray_result {
+                if cfg!(windows) {
+                    return Err(error.into());
+                }
+                eprintln!("托盘不可用（{error}），LAN-Drop 以无托盘模式继续；退出：pkill -x LAN-Drop");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

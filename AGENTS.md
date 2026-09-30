@@ -18,7 +18,7 @@ pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev�
 node scripts/smoke-api.mjs  # 67 项端到端冒烟（HTTP + WS + 断点续传 + UDP 发现）；必须先起服务端，且必须本机跑（配对码仅回环可读）
 source scripts/dev-env.sh   # JAVA_HOME / ANDROID_HOME / PATH；非交互 shell 必须显式 source（~/.bashrc 会 early-return）
 cd android && ./gradlew :app:assembleDebug
-pnpm desktop:resources      # 桌面壳资源：esbuild 自包含 server bundle（metafile 检查）+ web/dist + sidecar node.exe
+pnpm desktop:resources      # 桌面壳资源：esbuild 自包含 server bundle（metafile 检查）+ web/dist + 按运行平台拉 sidecar node
 pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查）
 ```
 
@@ -57,23 +57,36 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   `LAN_DROP_DEV_ENTRY` 指向的 `apps/server/src/index.ts`。
 - 资源布局必须与 `app.ts` 的 `resolveStaticRoot()` 候选顺序对齐：`resources/server/server.js` +
   `resources/web/dist`（server.js 上级的 web/dist 命中第二个候选）。改布局必须同时改那里的注释。
+  **resources 落点两平台不同**：Windows（NSIS/CLI）全平铺 exe 同级；Linux（AppImage/deb 的
+  AppRun 布局）sidecar node 在 exe 同级 `usr/bin/`，`server/server.js` 与 `web/dist` 却在
+  exe 的 `../lib/<productName>/`（即 `usr/lib/LAN-Drop/`）——`main.rs` 按存在性双候选探测。
 - **运行时路径三件事（都实测踩过）**：① `shell.sidecar()` 按 **exe 同级扁平名**解析
   （`sidecar("node")`）；externalBin 配置里的 `binaries/node` 只是打包器源路径，传它会找
   `exe_dir/binaries/node.exe`（os error 3）。② 别用 `resource_dir()`——裸跑（target/release
   直开）时解析出盘符根 `C:`，node 报 EISDIR；用 `current_exe()` 同级（裸跑与安装后布局一致）。
   ③ NSIS currentUser 安装目录 `%LOCALAPPDATA%\LAN-Drop` 与服务端默认数据根**撞目录**（卸载会
   误删数据），壳已注入 `LAN_DROP_DATA_ROOT=%LOCALAPPDATA%\LAN-Drop-Data`（用户显式设置时不覆盖）。
-- **构建只在 Windows 侧做**：MSVC（VS 18 BuildTools）与 WebView2 运行时本机已有；crates 走 rsproxy
+- **Windows 侧构建**：MSVC（VS 18 BuildTools）与 WebView2 运行时本机已有；crates 走 rsproxy
   sparse。**构建树必须复制到 C: 盘**——仓库在 WSL 文件系统上，从 Windows 侧按 \\\\wsl.localhost 路径
   构建，9P I/O 会让 cargo 慢到不可用。构建目录 `C:\Users\illag\.lan-drop-desktop-build`（
   `build.cmd` 一键跑 tauri build，NSIS 出安装包），产物拷回仓库 `dist/`。
-- `@tauri-apps/cli` 2.12 起平台包里是 `.node` 原生插件（`cli.win32-x64-msvc.node`），**没有独立
-  exe**：在 Windows 侧 `npm install --registry=https://registry.npmmirror.com @tauri-apps/cli@2`
+- **Linux 侧构建（AppImage）在 WSL 里直接做**（仓库就是本地 I/O，无需复制构建树）：
+  `sudo apt install libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev`
+  （一次；build-essential/file/libssl-dev 本机已有）→ `pnpm desktop:resources`（按运行平台自动取
+  Linux node）→ `pnpm --filter @lan-drop/desktop exec tauri build --bundles appimage`，产物
+  `bundle/appimage/*.AppImage` 拷回 `dist/`。**WSLg 没有系统托盘**（StatusNotifierWatcher 缺失）：
+  libappindicator 只发 warning 不致命，进程照常跑；托盘目视项只能真 Linux 桌面验证，壳已做
+  「托盘初始化失败不退出」降级（仅 Linux 分支，Windows 托盘失败仍按 setup 失败退出）。
+- `@tauri-apps/cli` 2.x 平台包里是 `.node` 原生插件（如 `cli.win32-x64-msvc.node`），**没有独立
+  exe**。它已是 `apps/desktop` 的 devDependency（pnpm 按构建平台拉对应平台包）；Windows 侧早期
+  独立安装的方式：`npm install --registry=https://registry.npmmirror.com @tauri-apps/cli@2`
   （不动全局 registry 配置），用本机 node 跑 `tauri.js`。
 - 壳的行为约定：`single-instance` 插件必须最先注册（第二次启动=打开控制台，绝不出现第二个
   sidecar）；sidecar 意外退出时壳 `exit(1)`（`killed_by_us` 标记防止主动退出被 Terminated 事件
   误报成异常退出）；sidecar 的 stdout/stderr 落应用日志目录 `server-sidecar.log`（Windows：
-  `%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\`）。
+  `%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\`，Linux：
+  `~/.local/share/io.github.illagercpr.landrop.desktop/logs/`）。杀 sidecar → 壳 exit(1) 的崩溃
+  联动在两平台都有日志证据（Linux 上 node 收 SIGTERM 会优雅退出 code 0，壳仍按「非壳所杀」处理）。
 - 图标：`apps/desktop/scripts/make-icon.mjs` 用 SDF + 亚采样手写 PNG（纯 node:zlib，不引图像库），
   再 `pnpm dlx @tauri-apps/cli icon` 生成全套；改图标先改脚本再重生成。
 - 防火墙仍走 `scripts/windows-allow-lan.ps1`（管理员执行一次：TCP 8787 + UDP 8788）；Tauri
