@@ -15,11 +15,8 @@
     "test": "pnpm -r test",
     "web:dev": "pnpm --filter @lan-drop/web dev",
     "web:build": "pnpm --filter @lan-drop/web build",
-    "bundle": "node scripts/package.mjs --target stage",
-    "package:win": "node scripts/package.mjs --target win",
-    "package:linux": "node scripts/package.mjs --target linux",
-    "package:all": "node scripts/package.mjs --target all",
-    "verify:package": "node scripts/verify-package.mjs --target linux",
+    "desktop:resources": "node apps/desktop/scripts/prepare-resources.mjs",
+    "desktop:icon": "node apps/desktop/scripts/make-icon.mjs",
     "fix:ps1-bom": "node scripts/fix-ps1-bom.mjs"
   },
   "devDependencies": {

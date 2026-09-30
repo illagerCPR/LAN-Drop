@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 给 packaging/ 下的 .ps1 补 UTF-8 BOM（缺了就直接失败，`--check` 只检查不改）。
+ * 给 scripts/ 下的 .ps1 补 UTF-8 BOM（缺了就补上，`--check` 只检查不改）。
  *
  *   node scripts/fix-ps1-bom.mjs            # 补齐
  *   node scripts/fix-ps1-bom.mjs --check    # 只检查（CI / 提交前用）
@@ -9,7 +9,7 @@
  * 对无 BOM 的 .ps1 会按系统 ANSI 代码页（中文系统是 GBK）解码，中文字符串变乱码，
  * 其中某些字节恰好是引号或反引号，于是报出「参数列表中缺少参数」这类与真实原因
  * 毫无关系的语法错误——在 Linux 上完全看不出来，只有到 Windows 上才炸。
- * 出包脚本 scripts/package.mjs 里也有一道同样的闸门（缺 BOM 直接拒绝出包）。
+ * （历史：便携包时代的 packaging/windows/*.ps1 也归它管；便携包放弃后只剩 scripts/。）
  */
 
 import { readFile, readdir, writeFile } from "node:fs/promises";
@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const targets = [join(repoRoot, "packaging", "windows"), join(repoRoot, "scripts")];
+const targets = [join(repoRoot, "scripts")];
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const checkOnly = process.argv.includes("--check");
 

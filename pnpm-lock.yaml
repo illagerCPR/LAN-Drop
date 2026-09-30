@@ -12,6 +12,8 @@ importers:
         specifier: ^0.28.2
         version: 0.28.2
 
+  apps/desktop: {}
+
   apps/server:
     dependencies:
       '@fastify/static':

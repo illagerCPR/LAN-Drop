@@ -1,0 +1,4 @@
+# 构建产物与资源全部不进库（资源由 scripts/prepare-resources.mjs 生成）
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/resources/
