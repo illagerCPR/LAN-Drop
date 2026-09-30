@@ -30,6 +30,16 @@ enum class SocketState {
 
     /** 掉线后正在按退避重试 */
     RECONNECTING,
+
+    /**
+     * 服务端明确拒绝凭据（WS 关闭码 4401 / HTTP 401）。
+     *
+     * 与 RECONNECTING 必须区分：这种情况下重试一万次也是 401，
+     * 继续重连只会让界面永远显示「正在重连…」误导用户（实测踩过：
+     * 服务端设备行丢失后，横幅一直显示「连接断开，正在重连…」）。
+     * 唯一出路是解除配对重新配对。
+     */
+    CREDENTIALS_INVALID,
 }
 
 /** 服务端推来的事件（已解析）。未知类型被静默忽略，便于协议向前兼容。 */
@@ -37,6 +47,9 @@ sealed interface WsEvent {
     data object Connected : WsEvent
 
     data class Disconnected(val reason: String) : WsEvent
+
+    /** 服务端拒绝凭据：连接层已停止重连，等待用户解除配对后重新配对。 */
+    data object CredentialInvalid : WsEvent
 
     data class Hello(val payload: WsHelloPayloadDto) : WsEvent
 
@@ -137,6 +150,7 @@ class LanDropSocket(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             socket = null
+            if (handleCredentialRejection(code, null)) return
             if (!manualClose) {
                 emit(WsEvent.Disconnected(reason.ifBlank { "连接已关闭（$code）" }))
                 scheduleReconnect()
@@ -145,11 +159,25 @@ class LanDropSocket(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             socket = null
+            // 握手阶段就被拒时（HTTP 层 401）走这里；升级成功后被服务端踢走走 onClosed
+            if (handleCredentialRejection(response?.code ?: 0, t)) return
             if (!manualClose) {
                 emit(WsEvent.Disconnected(t.message ?: "网络异常"))
                 scheduleReconnect()
             }
         }
+    }
+
+    /**
+     * 服务端明确拒绝凭据（HTTP 401 或 WS 关闭码 4401）时：进入
+     * [SocketState.CREDENTIALS_INVALID] 并停止重连，返回 true 表示已按凭据失效处理。
+     */
+    private fun handleCredentialRejection(statusOrCode: Int, cause: Throwable?): Boolean {
+        if (statusOrCode != HTTP_UNAUTHORIZED && statusOrCode != WS_CLOSE_UNAUTHORIZED) return false
+        _state.value = SocketState.CREDENTIALS_INVALID
+        emit(WsEvent.CredentialInvalid)
+        emit(WsEvent.Disconnected(cause?.message ?: "登录凭据已失效"))
+        return true
     }
 
     private fun scheduleReconnect() {
@@ -172,6 +200,12 @@ class LanDropSocket(
 
     companion object {
         private const val NORMAL_CLOSURE = 1000
+
+        /** HTTP 401：握手阶段就被服务端拒绝。 */
+        private const val HTTP_UNAUTHORIZED = 401
+
+        /** 自定义 WS 关闭码：鉴权失败（与服务端 `app.ts` 的 `WS_CLOSE_UNAUTHORIZED` 一致）。 */
+        private const val WS_CLOSE_UNAUTHORIZED = 4401
 
         /** 重连退避序列（毫秒）；超出长度后一直用最后一个值。 */
         private val BACKOFF_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 10_000)

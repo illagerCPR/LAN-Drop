@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -76,6 +77,7 @@ fun ChatScreen(
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
     val onlineCount by viewModel.onlineCount.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
+    val autoReceiveFiles by viewModel.autoReceiveFiles.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
 
@@ -153,6 +155,16 @@ fun ChatScreen(
                                 onClick = {
                                     showMenu = false
                                     viewModel.refresh()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("自动接收文件") },
+                                onClick = { viewModel.toggleAutoReceiveFiles() },
+                                trailingIcon = {
+                                    Checkbox(
+                                        checked = autoReceiveFiles,
+                                        onCheckedChange = { viewModel.toggleAutoReceiveFiles() },
+                                    )
                                 },
                             )
                             DropdownMenuItem(
@@ -301,6 +313,8 @@ private fun statusLine(state: SocketState, sync: SyncState, onlineCount: Int): S
     state == SocketState.ONLINE -> "在线 · $onlineCount 台设备"
     state == SocketState.CONNECTING -> "正在连接…"
     state == SocketState.RECONNECTING -> "连接断开，正在重连…"
+    // 服务端明确拒绝了凭据，重试没有意义；把出路直接告诉用户
+    state == SocketState.CREDENTIALS_INVALID -> "配对已失效，请在「更多」里解除配对后重新配对"
     sync is SyncState.Failed -> sync.message
     else -> "未连接"
 }

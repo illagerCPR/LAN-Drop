@@ -14,7 +14,7 @@ pnpm install
 pnpm -r typecheck           # 全仓类型检查；没有测试框架，这就是 TS 侧的验证手段，提交前必跑
 pnpm dev                    # 服务端 --watch，监听 0.0.0.0:8787
 pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev）
-node scripts/smoke-api.mjs  # 62 项端到端冒烟（HTTP + WS + 断点续传）；必须先起服务端，且必须本机跑（配对码仅回环可读）
+node scripts/smoke-api.mjs  # 67 项端到端冒烟（HTTP + WS + 断点续传 + UDP 发现）；必须先起服务端，且必须本机跑（配对码仅回环可读）
 source scripts/dev-env.sh   # JAVA_HOME / ANDROID_HOME / PATH；非交互 shell 必须显式 source（~/.bashrc 会 early-return）
 cd android && ./gradlew :app:assembleDebug
 ```
@@ -58,8 +58,32 @@ cd android && ./gradlew :app:assembleDebug
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 32 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑。
+- `./gradlew :app:testDebugUnitTest` 是 38 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格）。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
+
+### UDP 自动发现与连接状态（P3-3）
+
+- 发现协议两端成对实现：服务端 `apps/server/src/discovery.ts`、客户端 `net/ServerDiscovery.kt`。
+  探测报文是文本 `LANDROP-DISCOVER-v1`（UDP 8788，**整包精确匹配**）；应答 JSON
+  `{ service, v, id, name, port }`。改任何一端的字段/魔法串/端口必须同步另一端，
+  Android 侧常量在 `ServerDiscovery.DISCOVERY_PORT`。
+- **问答式而非定时广播**：应答是单播，Android 不申请 `MulticastLock` 也收得到；
+  客户端要同时发 `255.255.255.255` 与各网卡定向广播（部分 AP/ROM 组合会吞其中一种）。
+  WSL2 镜像模式实测能收到局域网 UDP 广播，无需额外端口转发。
+- **凭据失效是独立状态 `SocketState.CREDENTIALS_INVALID`**：服务端以 WS 4401 / HTTP 401
+  拒绝时，客户端停止重连、横幅直接给出「解除配对重新配对」的出路。**不要把它并回
+  RECONNECTING**——重试一万次也是 401，继续显示「正在重连…」是实测踩过的误导
+  （服务端设备行丢失后横幅挂了半天）。找回扫描在凭据失效时跳过（服务端活着，扫了也空转）。
+- 断线找回按 `serverId` 匹配、更新 `ConnectionStore.updateBaseUrl`（凭据不动），
+  `connection` StateFlow 新值会自动触发重连。别在这里做「换 serverId 就重新配对」以外的事——
+  换了 serverId 的服务端必须走清缓存重配对（见 `PairingRepository.pair` 里的既有逻辑）。
+- **自动接收默认关，且开启时刻即基准点（`autoReceiveSince`）**：只自动下载晚于基准点的
+  入站文件消息，防止开启后首次全量同步把服务端历史文件全拉下来。去重靠两层：
+  进程内 `autoReceivedIds`（挡 WS 推送与增量同步的并发窗口）+ 传输表 `message_id` 查询
+  （兜底进程重启）。离线补拉的消息同样要过 `maybeAutoReceive`，否则开关形同虚设。
+- **清理服务端测试数据时点名删除，绝不整表清设备行**：手机设备行删了，手机就会永远 401
+  （见上一条）。另外 `/tmp/send-file.mjs` 这类 PC 侧脚本每次运行都自注册一台新设备
+  （`PC/linux`），用完要删，否则设备表累积僵尸行、排查「设备行为什么变了」会被带偏。
 
 ### 前台服务与通知（P3-2）
 

@@ -4,6 +4,7 @@ import { createApp } from "./app.ts";
 import { PairingManager } from "./auth.ts";
 import { loadConfig } from "./config.ts";
 import type { AppContext } from "./context.ts";
+import { DiscoveryService } from "./discovery.ts";
 import { Hub } from "./hub.ts";
 import { loadOrCreateIdentity } from "./identity.ts";
 import { lanAddresses } from "./net.ts";
@@ -33,6 +34,10 @@ async function main(): Promise<void> {
   const app = createApp(ctx);
   await app.listen({ host: config.host, port: config.port });
 
+  // UDP 自动发现：绑定失败只降级（日志说明），不影响 HTTP 服务
+  const discovery = new DiscoveryService(config, identity.serverId);
+  discovery.start(app.log);
+
   const addresses = lanAddresses();
   const { code, expiresAt } = pairing.current();
   const minutes = Math.max(1, Math.round((expiresAt - Date.now()) / 60000));
@@ -52,6 +57,10 @@ async function main(): Promise<void> {
 
   for (const ip of addresses) {
     lines.push(`  手机访问   http://${ip}:${config.port}`);
+  }
+
+  if (config.discoveryEnabled) {
+    lines.push(`  自动发现   UDP ${config.discoveryPort} 端口（手机端点「扫描局域网」即可找到本服务端）`);
   }
 
   lines.push(
@@ -90,6 +99,7 @@ async function main(): Promise<void> {
     app.log.info({ signal }, "正在关闭…");
     clearInterval(cleanupTimer);
     try {
+      discovery.stop();
       await app.close();
     } finally {
       process.exit(0);

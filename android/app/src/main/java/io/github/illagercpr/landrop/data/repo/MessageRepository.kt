@@ -5,11 +5,13 @@ import io.github.illagercpr.landrop.data.local.MessageDirection
 import io.github.illagercpr.landrop.data.local.MessageEntity
 import io.github.illagercpr.landrop.data.local.toEntity
 import io.github.illagercpr.landrop.data.prefs.ConnectionStore
+import io.github.illagercpr.landrop.data.prefs.SettingsStore
 import io.github.illagercpr.landrop.net.LanDropApi
 import io.github.illagercpr.landrop.net.LanDropSocket
 import io.github.illagercpr.landrop.net.SocketState
 import io.github.illagercpr.landrop.net.WsEvent
 import io.github.illagercpr.landrop.net.toUserMessage
+import java.util.Collections
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -41,6 +43,16 @@ fun interface NewMessageNotifier {
 }
 
 /**
+ * 自动接收的落点：把一条入站文件消息转成下载任务。
+ *
+ * 抽成接口与 [NewMessageNotifier] 同理——消息层只判断「该不该自动收」，
+ * 下载怎么跑是传输层的事，两层不直接依赖。
+ */
+fun interface AutoReceiveStarter {
+    fun startDownload(message: MessageEntity)
+}
+
+/**
  * 会话消息的权威副本在服务端，本类负责：
  *  1. 首次全量 / 断线后增量地把消息同步进 Room（游标是本地最大 `seq`）；
  *  2. 把 WebSocket 推来的实时消息落库，实现「PC 发一条，手机立刻出现」；
@@ -56,9 +68,18 @@ class MessageRepository(
     private val socket: LanDropSocket,
     private val scope: CoroutineScope,
     private val notifier: NewMessageNotifier,
+    private val settings: SettingsStore,
+    private val autoReceive: AutoReceiveStarter,
 ) {
     private val dao = db.messageDao()
     private val syncMutex = Mutex()
+
+    /**
+     * 本进程内已自动接收过的消息 ID。WS 推送与增量同步可能先后到达同一条消息，
+     * Room 的 upsert 不去重传输，这道内存闸负责并发窗口内的防重；
+     * 进程重启后的防重由传输表的 `message_id` 查询兜底。
+     */
+    private val autoReceivedIds: MutableSet<String> = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
 
     /** 时间线（新 → 旧）。界面用 `reverseLayout = true` 的 LazyColumn 渲染，天然贴底。 */
     val timeline: Flow<List<MessageEntity>> = dao.observeRecent(TIMELINE_LIMIT)
@@ -112,7 +133,10 @@ class MessageRepository(
 
                     if (page.items.isEmpty()) break
 
-                    dao.upsertAll(page.items.map { it.toEntity(connection.deviceId) })
+                    val entities = page.items.map { it.toEntity(connection.deviceId) }
+                    dao.upsertAll(entities)
+                    // 离线期间的入站文件同样参与自动接收，否则开关形同虚设
+                    entities.forEach { maybeAutoReceive(it) }
 
                     // 服务端说还有、但这一页已经追平 latestSeq 时收手，避免空转
                     if (!page.hasMore || page.latestSeq <= since) break
@@ -147,6 +171,9 @@ class MessageRepository(
 
             is WsEvent.Disconnected -> _peerOnline.value = false
 
+            // 连接层已停止重连，界面靠 socketState 展示「请重新配对」；这里无事可做
+            is WsEvent.CredentialInvalid -> Unit
+
             is WsEvent.Hello -> {
                 _onlineCount.value = event.payload.onlineCount
                 // 服务端水位比本地游标高 → 离线期间错过消息，立刻补拉
@@ -159,6 +186,7 @@ class MessageRepository(
                 // 只提醒对端发来的：服务端会把消息广播给所有客户端，包括发送者自己
                 if (entity.direction == MessageDirection.INBOUND) {
                     notifier.onMessage(entity)
+                    maybeAutoReceive(entity)
                 }
             }
 
@@ -179,5 +207,28 @@ class MessageRepository(
 
         /** 本地保留的消息条数上限；更早的历史按需再向服务端翻页，首版不做。 */
         const val TIMELINE_LIMIT = 500
+
+        /** 与 [io.github.illagercpr.landrop.ui.chat] 的 KIND_FILE 一致：kind 落库存小写。 */
+        const val KIND_FILE = "file"
+    }
+
+    /**
+     * 自动接收的判定与防重。
+     *
+     * 三个条件同时满足才收：开关打开、入站文件消息、晚于开启基准点
+     * （防止开启后第一次全量同步把服务端历史里的文件全拉下来）。
+     * 同一条消息无论手动还是自动，发起过一次传输就不再重复——
+     * 内存闸挡住 WS 推送与增量同步的并发窗口，传输表的 `message_id` 查询兜底进程重启。
+     */
+    private suspend fun maybeAutoReceive(entity: MessageEntity) {
+        if (!settings.autoReceiveFiles.value) return
+        if (entity.direction != MessageDirection.INBOUND) return
+        if (entity.kind != KIND_FILE) return
+        if (entity.createdAt < settings.autoReceiveSince) return
+        if (entity.fileId == null) return
+        if (!autoReceivedIds.add(entity.id)) return
+        if (db.transferDao().findByMessageId(entity.id) != null) return
+
+        autoReceive.startDownload(entity)
     }
 }

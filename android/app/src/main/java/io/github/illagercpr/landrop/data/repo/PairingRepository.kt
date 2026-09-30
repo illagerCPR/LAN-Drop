@@ -1,12 +1,21 @@
 package io.github.illagercpr.landrop.data.repo
 
 import android.os.Build
+import android.os.SystemClock
 import io.github.illagercpr.landrop.data.local.LanDropDatabase
 import io.github.illagercpr.landrop.data.prefs.Connection
 import io.github.illagercpr.landrop.data.prefs.ConnectionStore
+import io.github.illagercpr.landrop.net.DiscoveredServer
 import io.github.illagercpr.landrop.net.LanDropApi
+import io.github.illagercpr.landrop.net.LanDropSocket
+import io.github.illagercpr.landrop.net.ServerDiscovery
+import io.github.illagercpr.landrop.net.SocketState
 import io.github.illagercpr.landrop.net.toUserMessage
 import io.github.illagercpr.landrop.protocol.ProtocolVersion
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** 配对阶段可能出现的、需要给用户不同指引的结果。 */
 sealed interface PairResult {
@@ -25,7 +34,15 @@ class PairingRepository(
     private val store: ConnectionStore,
     private val api: LanDropApi,
     private val database: LanDropDatabase,
+    private val socket: LanDropSocket,
+    private val discovery: ServerDiscovery,
+    private val scope: CoroutineScope,
 ) {
+    private var recoveryJob: Job? = null
+
+    /** 上次找回扫描的时间（单调时钟），防止长时间断线期间高频 UDP 扫描。 */
+    @Volatile
+    private var lastRecoveryAtMs = 0L
     /** 探测服务端，成功时返回它的展示名（配对页的「测试连接」按钮用）。 */
     suspend fun probe(rawAddress: String): Result<String> {
         val baseUrl = ConnectionStore.normalizeBaseUrl(rawAddress)
@@ -115,5 +132,59 @@ class PairingRepository(
 
     fun unpair() = store.clear()
 
+    /** 扫描局域网里的 LAN-Drop 服务端（配对页「扫描局域网」按钮用）。 */
+    suspend fun discoverServers(): List<DiscoveredServer> = discovery.discover()
+
+    /**
+     * 断线后按 serverId 找回服务端（典型场景：PC 换了 IP、DHCP 续租变了地址）。
+     *
+     * 由 [AppContainer][io.github.illagercpr.landrop.di.AppContainer] 在收到断线事件时调用；
+     * 内部先等一小段「短暂抖动窗口」——普通抖动交给既有退避重连即可，不值得扫一轮 UDP。
+     */
+    fun onSocketDisconnected() {
+        recoveryJob?.cancel()
+        recoveryJob = scope.launch {
+            delay(RECOVERY_DELAY_MS)
+            // 凭据失效时服务端明明活着，扫描只会得到同一个地址；等用户重新配对
+            if (socket.state.value == SocketState.CREDENTIALS_INVALID) return@launch
+            if (socket.state.value == SocketState.ONLINE) return@launch
+            // 找回成功时地址已写入 ConnectionStore，重连由既有机制自动触发
+            runCatching { recoverIfServerMoved() }
+        }
+    }
+
+    /**
+     * 扫一轮局域网，找到与本地记录同 `serverId` 的服务端时更新地址。
+     *
+     * 返回是否发生了地址变更。找不到（服务端确实关了）返回 false，
+     * 交给既有的退避重连继续按旧地址重试——那仍是正确的默认行为。
+     */
+    suspend fun recoverIfServerMoved(): Boolean {
+        val connection = store.connection.value ?: return false
+        if (connection.serverId.isBlank()) return false
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRecoveryAtMs < RECOVERY_MIN_INTERVAL_MS) return false
+        lastRecoveryAtMs = now
+
+        val servers = runCatching { discovery.discover(RECOVERY_SCAN_TIMEOUT_MS) }.getOrNull().orEmpty()
+        val match = servers.firstOrNull { it.id == connection.serverId } ?: return false
+        if (match.baseUrl == connection.baseUrl) return false
+
+        store.updateBaseUrl(match.baseUrl)
+        return true
+    }
+
     private fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
+
+    private companion object {
+        /** 断线后等这么久还没重连上，才认为值得扫一轮。 */
+        const val RECOVERY_DELAY_MS = 4_000L
+
+        /** 两次找回扫描的最小间隔：长时间断线时事件每 ~10 秒来一次，别跟着全跑。 */
+        const val RECOVERY_MIN_INTERVAL_MS = 15_000L
+
+        /** 找回扫描比手动扫描更收着用：窗口短一点，快出结论。 */
+        const val RECOVERY_SCAN_TIMEOUT_MS = 800L
+    }
 }

@@ -2,6 +2,7 @@ package io.github.illagercpr.landrop.ui.pair
 
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +52,8 @@ fun PairingScreen(
     val context = LocalContext.current
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val feedback by viewModel.feedback.collectAsStateWithLifecycle()
+    val scanning by viewModel.scanning.collectAsStateWithLifecycle()
+    val discovered by viewModel.discovered.collectAsStateWithLifecycle()
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -139,6 +142,46 @@ fun PairingScreen(
                     CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
                     Text("正在连接…", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ---- 局域网自动发现 ----
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = viewModel::scan, enabled = !busy && !scanning) {
+                    Text(if (scanning) "扫描中…" else "扫描局域网")
+                }
+                if (scanning) {
+                    Spacer(Modifier.width(12.dp))
+                    CircularProgressIndicator(modifier = Modifier.width(16.dp), strokeWidth = 2.dp)
+                }
+            }
+
+            discovered.forEach { server ->
+                Spacer(Modifier.height(8.dp))
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.useDiscovered(server) }
+                            .padding(16.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(server.name, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                server.baseUrl.removePrefix("http://"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "使用",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
 

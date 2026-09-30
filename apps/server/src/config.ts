@@ -16,6 +16,10 @@ export interface ServerConfig {
   pairingRequired: boolean;
   /** 是否只接受私有网段来源（防止误暴露到公网） */
   privateNetworkOnly: boolean;
+  /** UDP 自动发现端口（客户端广播探测、服务端单播应答） */
+  discoveryPort: number;
+  /** 是否启用 UDP 自动发现 */
+  discoveryEnabled: boolean;
 }
 
 function defaultDataRoot(): string {
@@ -67,5 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     serverName: env["LAN_DROP_SERVER_NAME"]?.trim() || defaultServerName(),
     pairingRequired: parseBoolOr(env["LAN_DROP_PAIRING_REQUIRED"], true),
     privateNetworkOnly: parseBoolOr(env["LAN_DROP_PRIVATE_ONLY"], true),
+    discoveryPort: parseIntOr(env["LAN_DROP_DISCOVERY_PORT"], 8788),
+    discoveryEnabled: parseBoolOr(env["LAN_DROP_DISCOVERY"], true),
   };
 }

@@ -81,6 +81,18 @@ class ConnectionStore(context: Context) {
     }
 
     /**
+     * 服务端换了地址（换 IP、换端口）后原地更新，凭据保持不变。
+     *
+     * `connection` 是 StateFlow，新值会直接触发 [MessageRepository] 的重连；
+     * 典型来源是断线后按 serverId 的自动找回（[PairingRepository.recoverIfServerMoved]）。
+     */
+    fun updateBaseUrl(baseUrl: String) {
+        val current = _connection.value ?: return
+        prefs.edit { putString(KEY_BASE_URL, baseUrl) }
+        _connection.value = current.copy(baseUrl = baseUrl)
+    }
+
+    /**
      * 解除配对：清空凭据（保留设备名、上次地址与 serverId，供重新配对与
      * 「是否换了服务端」的判断使用）。
      */

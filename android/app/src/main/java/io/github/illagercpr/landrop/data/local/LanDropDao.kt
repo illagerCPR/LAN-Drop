@@ -43,6 +43,10 @@ interface TransferDao {
     @Query("SELECT * FROM transfers WHERE id = :id")
     suspend fun findById(id: String): TransferEntity?
 
+    /** 自动接收的去重依据：同一条文件消息只允许发起一次传输（手动下载过或自动过都算）。 */
+    @Query("SELECT * FROM transfers WHERE message_id = :messageId LIMIT 1")
+    suspend fun findByMessageId(messageId: String): TransferEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: TransferEntity)
 

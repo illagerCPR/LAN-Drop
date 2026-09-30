@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import io.github.illagercpr.landrop.data.prefs.ConnectionStore
 import io.github.illagercpr.landrop.data.repo.PairResult
 import io.github.illagercpr.landrop.data.repo.PairingRepository
+import io.github.illagercpr.landrop.net.DiscoveredServer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,12 @@ class PairingViewModel(
     /** 操作结果提示：成功为绿色语气，失败为错误语气，由界面区分。 */
     private val _feedback = MutableStateFlow<Feedback?>(null)
     val feedback: StateFlow<Feedback?> = _feedback.asStateFlow()
+
+    private val _scanning = MutableStateFlow(false)
+    val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+
+    private val _discovered = MutableStateFlow<List<DiscoveredServer>>(emptyList())
+    val discovered: StateFlow<List<DiscoveredServer>> = _discovered.asStateFlow()
 
     val deviceName: String = store.deviceName
 
@@ -75,6 +82,33 @@ class PairingViewModel(
             }
             _busy.value = false
         }
+    }
+
+    /**
+     * 扫描局域网里的 LAN-Drop 服务端（UDP 自动发现）。
+     *
+     * 扫描不到不算错误状态以外的异常：服务端可能没开机、也可能在另一个网段，
+     * 提示文案要把「下一步可以做什么」说清楚。
+     */
+    fun scan() {
+        if (_scanning.value) return
+
+        viewModelScope.launch {
+            _scanning.value = true
+            _discovered.value = runCatching { pairing.discoverServers() }.getOrDefault(emptyList())
+            _scanning.value = false
+            _feedback.value = if (_discovered.value.isEmpty()) {
+                Feedback("没有扫描到服务端：请确认 PC 已启动并与手机在同一 WiFi，或手动输入地址", isError = true)
+            } else {
+                Feedback("扫描到 ${_discovered.value.size} 台服务端，点击即可填入地址", isError = false)
+            }
+        }
+    }
+
+    /** 点选一台扫描到的服务端：只填地址，配对码仍需用户在 PC 页面上读。 */
+    fun useDiscovered(server: DiscoveredServer) {
+        address = server.baseUrl
+        _feedback.value = Feedback("已填入「${server.name}」的地址，输入配对码即可配对", isError = false)
     }
 
     /**

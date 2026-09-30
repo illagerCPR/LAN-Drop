@@ -10,6 +10,7 @@ import io.github.illagercpr.landrop.data.local.MessageEntity
 import io.github.illagercpr.landrop.data.repo.MessageRepository
 import io.github.illagercpr.landrop.data.repo.PairingRepository
 import io.github.illagercpr.landrop.data.repo.TransferRepository
+import io.github.illagercpr.landrop.data.prefs.SettingsStore
 import io.github.illagercpr.landrop.net.toUserMessage
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -39,6 +40,7 @@ class ChatViewModel(
     private val messages: MessageRepository,
     private val transfers: TransferRepository,
     private val pairing: PairingRepository,
+    private val settings: SettingsStore,
 ) : ViewModel() {
 
     val timeline = messages.timeline
@@ -47,6 +49,8 @@ class ChatViewModel(
     val syncState = messages.syncState
     val onlineCount = messages.onlineCount
     val peerOnline = messages.peerOnline
+
+    val autoReceiveFiles = settings.autoReceiveFiles
 
     var draft by mutableStateOf("")
         private set
@@ -156,5 +160,10 @@ class ChatViewModel(
 
     fun unpair() {
         pairing.unpair()
+    }
+
+    /** 切换「自动接收文件」；默认关，开启时刻即自动接收的基准点。 */
+    fun toggleAutoReceiveFiles() {
+        settings.setAutoReceiveFiles(!settings.autoReceiveFiles.value)
     }
 }

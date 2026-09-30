@@ -13,6 +13,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import dgram from "node:dgram";
 import net from "node:net";
 
 const baseUrl = process.argv[2] ?? "http://127.0.0.1:8787";
@@ -59,6 +60,38 @@ async function json(method, path, { token, body, headers = {} } = {}) {
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * 向本机回环发一次 UDP 发现探测，返回解析后的应答（超时 / 出错返回 null）。
+ *
+ * 发送端绑随机端口，应答是发回该端口的单播——与真机上 Android 客户端的行为一致。
+ */
+function discoverUdp(discoveryPort, { timeoutMs = 1500 } = {}) {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.close();
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => done(null), timeoutMs);
+    socket.on("message", (buffer) => {
+      try {
+        done(JSON.parse(buffer.toString("utf8")));
+      } catch {
+        done(null);
+      }
+    });
+    socket.on("error", () => done(null));
+
+    const magic = Buffer.from("LANDROP-DISCOVER-v1", "utf8");
+    socket.send(magic, discoveryPort, "127.0.0.1");
+  });
 }
 
 /**
@@ -182,6 +215,20 @@ async function main() {
   check(info.status === 200, "GET /api/v1/info 返回 200", `status=${info.status}`);
   check(info.body?.protocolVersion === 1, "协议版本为 1", `v${info.body?.protocolVersion}`);
   check(typeof info.body?.serverId === "string", "返回 serverId");
+
+  // ---------------------------------------------------------------- 1b. UDP 自动发现
+  // 回环探测即可验证服务端应答逻辑；「手机广播能否穿透到服务端」是真机验收的事
+  console.log("\n[1b] UDP 自动发现");
+  const announce = await discoverUdp(Number(process.env.LAN_DROP_DISCOVERY_PORT ?? 8788));
+  check(announce !== null, "UDP 探测有应答");
+  check(announce?.service === "lan-drop", "应答 service 为 lan-drop");
+  check(announce?.id === info.body?.serverId, "应答 id 与 HTTP 元信息的 serverId 一致");
+  check(announce?.port === Number(new URL(baseUrl).port), "应答端口与 HTTP 端口一致");
+  check(
+    typeof announce?.name === "string" && announce.name.length > 0,
+    "应答携带展示名",
+    `name=${announce?.name}`,
+  );
 
   // ---------------------------------------------------------------- 2. 配对
   console.log("\n[2] 配对与鉴权");
