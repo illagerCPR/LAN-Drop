@@ -10,7 +10,8 @@ import org.junit.Test
  *
  * 这里锁住的是「分享面板送进来的东西五花八门」这一现实：
  *   - 同一批 URI 往往同时出现在 `EXTRA_STREAM` 与 `ClipData` 里（相册、文件管理器都这么发），
- *     不去重就会把同一张照片发两遍；
+ *     而且**两边可能是同一张照片的两种 URI 形态**（`…/images/media/1000102703` 与
+ *     `…/file/1000102703`），按字符串去重会漏，同一张照片就发两遍——真机上踩过；
  *   - 有的应用只填其中一边；
  *   - 文字可能是空白，应用也可能只发了个 action 什么都不带。
  *
@@ -18,6 +19,10 @@ import org.junit.Test
  * 纯 JVM 单测里拿不到实例，硬测只会写出测框架的假用例。
  */
 class ShareIntentTest {
+
+    /** 真机（vivo V2301A / Android 14）相册分享单张照片时实际发来的两条：同一张照片的两种形态。 */
+    private val typedPhotoUri = "content://media/external/images/media/1000102703"
+    private val genericPhotoUri = "content://media/external/file/1000102703"
 
     private fun raw(
         action: String? = Intent.ACTION_SEND,
@@ -82,6 +87,78 @@ class ShareIntentTest {
         )
 
         assertEquals(listOf("content://media/photo/42"), share?.uris)
+    }
+
+    @Test
+    fun `同一张照片的两种 URI 形态只保留一份`() {
+        // 实测形态：EXTRA_STREAM 是 …/images/media/<id>，ClipData 是 …/file/<id>。
+        // 字符串不相等，只有按「媒体条目身份」去重才能认出这是同一张照片。
+        val share = normalizeShare(
+            raw(streamUris = listOf(typedPhotoUri), clipUris = listOf(genericPhotoUri)),
+        )
+
+        // 保留先出现的那个（EXTRA_STREAM），它的授权也更可靠
+        assertEquals(listOf(typedPhotoUri), share?.uris)
+    }
+
+    @Test
+    fun `两种形态的 id 相同但卷不同时绝不合并`() {
+        val share = normalizeShare(
+            raw(
+                streamUris = listOf("content://media/external/file/7"),
+                clipUris = listOf("content://media/internal/file/7"),
+            ),
+        )
+
+        assertEquals(listOf("content://media/external/file/7", "content://media/internal/file/7"), share?.uris)
+    }
+
+    @Test
+    fun `带查询串的 URI 不参与合并`() {
+        // ?width=/?height= 会改变实际取到的内容，不是同一个东西
+        val share = normalizeShare(
+            raw(
+                streamUris = listOf("content://media/external/images/media/7?width=100"),
+                clipUris = listOf("content://media/external/file/7"),
+            ),
+        )
+
+        assertEquals(
+            listOf("content://media/external/images/media/7?width=100", "content://media/external/file/7"),
+            share?.uris,
+        )
+    }
+
+    @Test
+    fun `缩略图表与文件表 id 相同也不合并`() {
+        // images/thumbnails 是独立的表，id 与 files 表无关；只按「最后一段数字」合并就会并错东西
+        val share = normalizeShare(
+            raw(
+                streamUris = listOf("content://media/external/images/thumbnails/42"),
+                clipUris = listOf("content://media/external/file/42"),
+            ),
+        )
+
+        assertEquals(
+            listOf("content://media/external/images/thumbnails/42", "content://media/external/file/42"),
+            share?.uris,
+        )
+    }
+
+    @Test
+    fun `非媒体 URI 仍按字符串去重`() {
+        // SAF 文档 URI：身份就是字符串本身，重复的仍然只保留一份
+        val share = normalizeShare(
+            raw(
+                streamUris = listOf("content://com.android.providers.media.documents/document/image%3A42"),
+                clipUris = listOf("content://com.android.providers.media.documents/document/image%3A42"),
+            ),
+        )
+
+        assertEquals(
+            listOf("content://com.android.providers.media.documents/document/image%3A42"),
+            share?.uris,
+        )
     }
 
     @Test

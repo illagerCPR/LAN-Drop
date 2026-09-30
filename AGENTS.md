@@ -87,19 +87,36 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   未配对时文件不入队（那批 URI 反正留不住），只 Toast 提示先配对。
 - `share/ShareInbox` 是进程级收件箱，**消费必须取出即清空**（`getAndUpdate { null }`），
   否则一次重组就把同一批文件再发一遍。解析逻辑里只有 `normalizeShare(RawShare)` 与框架解耦，
-  新情况优先加在那里并用 `ShareIntentTest` 覆盖（现有 11 项）。
+  新情况优先加在那里并用 `ShareIntentTest` 覆盖（现有 18 项）。
 - **`ACTION_SEND` 的 URI 是临时授权**：不能 `takePersistableUriPermission`（`takePersistableRead`
   已 `runCatching` 兜住）。后果是分享进来的文件**只在本进程存续期内可读**，进程被杀后重新上传会
   打不开源文件并落成永久失败——这是刻意的取舍，别去「修」成假装能续传。
   应用内多选走的 SAF 才是持久授权。
 - 解析必须同时读 `EXTRA_STREAM`、`ClipData` 与 `Intent.data`：真实发送方多把 URI 放进 `ClipData`
   （只有 `EXTRA_STREAM` 的分享**没有读授权**，实测表现为「无法确定文件大小」）；
-  同一批 URI 两边都有时要**去重**，否则同一张照片发两遍。`EXTRA_STREAM` 还可能是 `String`/`String[]`，
+  同一批 URI 两边都有时要**去重**。`EXTRA_STREAM` 还可能是 `String`/`String[]`，
   按 `Uri` 硬读会 `ClassCastException` **把应用崩掉**，所以有宽容兜底。
+- **去重必须按「媒体条目身份」，不能比 URI 字符串**（`share/ShareInbox.kt` 的 `mediaIdentityOf`）。
+  相册分享单张照片时两边装的是**同一张照片的两种形态**：`…/images/media/1000102703`（`EXTRA_STREAM`）
+  与 `…/file/1000102703`（`ClipData`）。字符串不相等 → 字符串去重必漏 → 同一张照片传两遍
+  （用户实测报过「分享了一张图片，上传了两份」）。依据：MediaProvider 里 `images`/`video`/`audio`
+  都是 `files` 表之上的视图（`CREATE VIEW images AS SELECT … FROM files WHERE media_type=1`），
+  同一卷内行 id 唯一标识一个文件。**只认已核实是 `files` 表或其视图的形态**
+  （`file`/`downloads`/`images|video|audio/media`）——`…/images/thumbnails/<id>` 是独立表，
+  只按「最后一段数字」合并会把缩略图和别的文件并成一个；带 `?`/`#` 的一律不合并
+  （`?width=` 会改变实际内容）。**拿不准就不合并**：重复上传可忍，合并错会让用户静默丢文件。
+- 真机驱动分享有两条硬事实：`am start` 只有 `--esa`（String[]），**没有 Uri 数组选项**，
+  所以造不出「两种形态各带授权」的输入；`--esa` 不生成 `ClipData`，因此
+  `--grant-prefix-uri-permission` 对 `content://media/external/` 的**前缀授权实测不生效**
+  （应用读不到，落成「无法确定文件大小」）。能自足使用的只有 `-d <uri> --grant-read-uri-permission`
+  （单 URI、冷启动都有效）。别把「上一次真实分享遗留的临时授权」当成自己的授权生效了——
+  进程一被杀授权就没了，`am force-stop` 后重跑最能暴露这一点。
 - **上传一律串行**（`TransferRepository.uploadQueue`）：单发与批量共用一把锁。并发多选会把局域网带宽
   切成几份并堆同样多的前台服务通知。下载不走这把锁。
 - 真机验收用 `am start -a android.intent.action.SEND …` 驱动即可（文字用 `--es`；单文件用
-  `-d <uri> --grant-read-uri-permission`；多文件用 `--esa android.intent.extra.STREAM a,b`）。
+  `-d <uri> --grant-read-uri-permission`；多文件用 `--esa android.intent.extra.STREAM a,b`，
+  但那批 URI **没有授权**——`--esa` 是纯字符串数组，系统不会为它建 `ClipData`，所以要么用
+  应用自己的 `file://` 内部文件，要么靠 `-d` 单独给一个 URI 授权）。
   两个坑：整条命令要加单引号，否则本机 shell 会把 `*/*` 当 glob 展开；
   验证数量要用**无 limit 的聚合查询**（`limit 5` 会让计数卡在 5，把「成功」看成「被吞」）。
 
@@ -121,7 +138,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 51 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 11 项分享内容归一化（去重、`ClipData` 兜底、空白文字、非分享 action、String[] 兼容）。
+- `./gradlew :app:testDebugUnitTest` 是 56 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容）。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）
