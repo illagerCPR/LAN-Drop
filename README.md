@@ -30,8 +30,9 @@ Edge Drop 下线后，在自家局域网里「电脑 ↔ 手机」随手丢一�
         └────────────────────────┘
 ```
 
-> 规划中（P3）：摄像头扫码配对、系统分享面板接入、多选/批量。
-> 这些尚未实现——文档只描述已经能跑的东西。
+> 尚未实现：摄像头扫码配对（解析逻辑已就绪，见 `ConnectionStore.extractPairingCode`；
+> 系统分享面板与多选/批量已在 P4-2 完成）。当前待办清单见 [docs/TODO.md](docs/TODO.md)
+> ——文档只描述已经能跑的东西。
 
 **分工原则**：控制面走 WebSocket，数据面走 HTTP。文件字节永不进 WS 通道，避免与聊天消息互相队头阻塞，同时白拿 HTTP 的 `Range` 断点续传与浏览器直下能力。
 
@@ -382,7 +383,7 @@ Linux 是 `~/.local/share/lan-drop` 加 `~/.config/lan-drop/env`。
 | 单文件分享（3 MB） | ✅ 逐字节一致、文件名一致 |
 | 一次分享两个文件（`ACTION_SEND_MULTIPLE`） | ✅ 两条按序上传完成，sha256 与本地探针逐一相符 |
 | 一个 intent 内含同一张照片的两种 URI 形态 | ✅ 修复后 1 条上传（修复前 2 条，见 [同一张照片被传两遍](#同一张照片被传两遍已修)） |
-| 应用在前台时分享文字 | ✅ 走 `onNewIntent` 投递，文字进输入框（实测提示 "intent has been delivered to currently running top-most instance"） |
+| 应用在前台时分享文字 | ✅ 文字进输入框（验证时走 `onNewIntent` 投递，实测提示 "intent has been delivered to currently running top-most instance"；P4-2 收尾后已改经无界面中转 Activity 投递，见下文） |
 | 应用内「文件」多选 | ⚠️ 本机的文件选择器不向无障碍树暴露文件名，**没有自动化验证**（按坐标盲点会误选用户私有文件，不能接受）；分享面板的多选路径已验证，同一套上传管线 |
 | 未配对时分享文件 | ⚠️ 代码路径为「提示先配对、不排队」（Toast），未真机验证（需先解除配对） |
 
