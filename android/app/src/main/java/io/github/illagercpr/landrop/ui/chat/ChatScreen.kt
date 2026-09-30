@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -93,6 +94,7 @@ fun ChatScreen(
 
     var showTransfers by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
@@ -132,6 +134,25 @@ fun ChatScreen(
     }
 
     val downloads = remember(transfers) { transfers.toDownloadStates() }
+
+    if (showClearConfirm) {
+        // 清的是本地缓存而非服务端记录：清完立刻重新同步，时间线会拉回来，
+        // 弹窗文案把这层说清，避免被当成「删除聊天记录」误用
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("清除本地消息缓存？") },
+            text = { Text("本机的聊天缓存会被清空并从服务端重新拉取；服务端的记录不受影响。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearConfirm = false
+                    viewModel.clearLocalMessages()
+                }) { Text("清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
+            },
+        )
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -175,6 +196,13 @@ fun ChatScreen(
                                         checked = autoReceiveFiles,
                                         onCheckedChange = { viewModel.toggleAutoReceiveFiles() },
                                     )
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("清除本地消息缓存") },
+                                onClick = {
+                                    showMenu = false
+                                    showClearConfirm = true
                                 },
                             )
                             DropdownMenuItem(

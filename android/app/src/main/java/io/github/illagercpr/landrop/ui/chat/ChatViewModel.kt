@@ -215,6 +215,20 @@ class ChatViewModel(
         pairing.unpair()
     }
 
+    /**
+     * 清除本地消息缓存（[MessageRepository.clearLocal]）。
+     *
+     * 服务端记录不受影响：清完立刻补一次同步，时间线会从服务端重新拉回——
+     * 这个入口是「本地缓存修复」，不是「删除聊天记录」，提示文案要说清这层。
+     */
+    fun clearLocalMessages() {
+        viewModelScope.launch {
+            messages.clearLocal()
+            _notice.value = "本地消息缓存已清除，正在重新同步…"
+            messages.syncNow()
+        }
+    }
+
     /** 切换「自动接收文件」；默认关，开启时刻即自动接收的基准点。 */
     fun toggleAutoReceiveFiles() {
         settings.setAutoReceiveFiles(!settings.autoReceiveFiles.value)
