@@ -133,6 +133,17 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   应用自己的 `file://` 内部文件，要么靠 `-d` 单独给一个 URI 授权）。
   两个坑：整条命令要加单引号，否则本机 shell 会把 `*/*` 当 glob 展开；
   验证数量要用**无 limit 的聚合查询**（`limit 5` 会让计数卡在 5，把「成功」看成「被吞」）。
+- **应用内多选可以按文件名驱动，不要盲点**（本会话修正旧结论）：vivo 的
+  `documentsui/.picker.PickActivity` **会**把文件名写成普通 `TextView` 的 `text`（旧前提
+  「不暴露文件名」出自相册式媒体选择器）。手势：**长按进入选择模式（标题变「已选择 N 项」）
+  → 点选其余项 → 点工具栏「选择」确认**；**单击 = 直接返回该文件**（单选路径，选择器立即关闭），
+  溢出菜单里只有「排序/全选」、没有确认键。隐私纪律：列表里同样可见用户的私有文件名
+  （准考证、私人文档等），**只按自己测试文件名做精确匹配点击**，绝不按坐标盲点、
+  绝不碰非本测试创建的条目；测试用完把种下的文件删掉。
+- **vivo 的 Toast 既不进无障碍 dump 也不进 logcat**，机器验证不可行——只能请用户目视确认，
+  且验收记录必须写明证据来源（「用户确认」≠「机器验证」）。
+- **输入法弹起会把底部输入栏顶高约 1000px**：点过输入框之后再点「发送」等底部按钮，
+  必须重新 dump 取新坐标（发送 y≈2533 → IME 弹起后 y≈1496），否则点空、消息留在草稿框。
 
 ### 时间线图片缩略图（P4-3）
 
@@ -206,6 +217,23 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - 验证保留策略别等一小时定时器：`LAN_DROP_CLEANUP_INTERVAL_MS` 可调（默认 3600000），
   15 秒一轮足够跑完「在线广播 + 离线水位」两条路径的真机验证。
 
+### 摄像头扫码配对（P3-4）
+
+- **单测造二维码要造「相机拍得到」的尺寸**：`QRCodeWriter` 传 `width=0` 会生成 1px/模块的
+  最小图（33×33），**任何二值化器都解不出来**（`HybridBinarizer`、全局直方图、
+  `PURE_BARCODE` hint 全部实测失败）；按相机实际分辨率放大（300×300）后全部通过。
+- **`MultiFormatReader.decode()` 内部会 `setHints(null)` 重置 hints**：要先 `setHints(...)`
+  再 `decodeWithState`，否则「只解 QR_CODE」的优化静默失效。
+- zxing 3.5.4 的 `PlanarYUVLuminanceSource` 构造器是 **8 参**（末位 `reverseHorizontal`）；
+  QR 解码对 90° 旋转天然不变，Y 平面无需旋转，镜像传 `false`。CameraX 的 Y 平面要按
+  `rowStride`/`pixelStride` 折叠成紧致亮度图（`scan/QrDecoder.kt`）。
+- **`ListenableFuture` 桥协程不必引 Guava**：手写 `suspendCancellableCoroutine` + 直接执行器
+  `addListener` 即可；相机绑定外层必须 `finally { unbindAll() }`（扫到/返回/异常三条路都松开）。
+- 相机权限只在扫码页申请（manifest 里的 `CAMERA` 权限为它而加，别挪到启动流程）。
+- 给真机扫码测试造二维码的复用技巧：用 zxing 把配对链接生成 **SVG** 写到
+  `/mnt/c/Users/Public/`，再 `cmd.exe /c start <文件>` 用 Windows 打开——PC 全屏显示、
+  手机直接对准扫即可。
+
 ## Web（apps/web）
 
 - tsconfig 开 `exactOptionalPropertyTypes`：给可选字段显式传 `undefined` 会编译错，用条件展开（`...(x ? { k: v } : {})`）。
@@ -224,7 +252,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 96 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 16 项协议一致性（改协议时同步更新里面的真实响应样本），`net/WsEnvelopeParserTest` 6 项 WS 事件信封解析（`message.new` 真实样本、`message.deleted`/`messages.purged` 必须解析为对应事件，缺 payload、未知 type 与坏 JSON 必须拒绝——协议向前兼容靠这条），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐）。
+- `./gradlew :app:testDebugUnitTest` 是 107 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 16 项协议一致性（改协议时同步更新里面的真实响应样本），`net/WsEnvelopeParserTest` 6 项 WS 事件信封解析（`message.new` 真实样本、`message.deleted`/`messages.purged` 必须解析为对应事件，缺 payload、未知 type 与坏 JSON 必须拒绝——协议向前兼容靠这条），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐），`scan/QrDecoderTest` 5 项扫码解码（stride/pixelStride 打包还原、非法输入返 null），`data/prefs/PairingPayloadTest` 6 项配对链接解析边界。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）
