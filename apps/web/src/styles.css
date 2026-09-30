@@ -514,8 +514,26 @@ textarea:focus {
   background: var(--danger);
 }
 
+.transfer.paused .transfer-fill,
+.transfer.pausing .transfer-fill,
+.transfer.queued .transfer-fill {
+  background: var(--text-dim);
+}
+
 .transfer-error {
   color: var(--danger);
+  font-size: 12px;
+}
+
+.transfer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.transfer-actions button {
+  padding: 2px 10px;
   font-size: 12px;
 }
 

@@ -1,9 +1,16 @@
 {
   "compilerOptions": {
     "target": "es2022",
-    "lib": ["es2022", "dom", "dom.iterable"],
+    "lib": [
+      "es2022",
+      "dom",
+      "dom.iterable"
+    ],
     "module": "esnext",
     "moduleResolution": "bundler",
+    "types": [
+      "node"
+    ],
     "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -15,5 +22,9 @@
     "useDefineForClassFields": true,
     "noEmit": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "vite.config.ts"
+  ]
 }

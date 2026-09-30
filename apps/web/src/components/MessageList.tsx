@@ -1,4 +1,4 @@
-import type { MessageDto } from "@lan-drop/protocol";
+import { isLinkText, type MessageDto } from "@lan-drop/protocol";
 import type { ReactElement } from "react";
 
 import { formatDayLabel, formatTime } from "../util.ts";
@@ -26,6 +26,10 @@ export function MessageList(props: { messages: readonly MessageDto[]; ownDeviceI
     }
 
     const own = ownDeviceId !== null && message.senderId === ownDeviceId;
+    const text = message.text ?? "";
+    // kind 由发送方自填，服务端不做语义校验；只有整段就是 http(s) 链接时才渲染成锚点，
+    // 别的一律当纯文本——否则 `javascript:` 这类伪协议会被塞进 href
+    const link = message.kind === "link" && isLinkText(text);
 
     nodes.push(
       <li key={message.seq} className={own ? "msg own" : "msg"}>
@@ -34,13 +38,13 @@ export function MessageList(props: { messages: readonly MessageDto[]; ownDeviceI
           {message.kind === "file" && message.file !== undefined ? (
             <FileCard file={message.file} />
           ) : null}
-          {message.kind === "link" && message.text !== undefined && message.text.length > 0 ? (
-            <a className="msg-link" href={message.text} target="_blank" rel="noreferrer">
-              {message.text}
+          {link ? (
+            <a className="msg-link" href={text} target="_blank" rel="noreferrer">
+              {text}
             </a>
           ) : null}
-          {message.kind === "text" && message.text !== undefined && message.text.length > 0 ? (
-            <div className="msg-text">{message.text}</div>
+          {!link && message.kind !== "file" && text.length > 0 ? (
+            <div className="msg-text">{text}</div>
           ) : null}
         </div>
         <div className="msg-time">{formatTime(message.createdAt)}</div>

@@ -7,7 +7,10 @@ import {
   type PairRequest,
   type PairResponse,
   type ServerInfoDto,
+  type UploadStatusDto,
 } from "@lan-drop/protocol";
+
+import type { UploadChunkResult, UploadTransport } from "./upload.ts";
 
 const TOKEN_KEY = "landrop.deviceToken";
 const DEVICE_ID_KEY = "landrop.deviceId";
@@ -151,12 +154,6 @@ export function createUpload(request_: CreateUploadRequest): Promise<CreateUploa
   });
 }
 
-export interface UploadChunkResult {
-  receivedBytes: number;
-  /** true 表示服务端回传了真实 offset（409 对齐），调用方应跳转到该位置续传 */
-  realigned: boolean;
-}
-
 /**
  * 追加一个分片。
  *
@@ -209,11 +206,33 @@ export function completeUpload(uploadId: string): Promise<MessageDto> {
   });
 }
 
+/**
+ * 查询服务端权威进度（断点续传的锚点）。
+ *
+ * 404 返回 `null` 而不是抛错：那表示会话已经不在服务端了（重启、被中止、清理过），
+ * 对调用方来说这是一条正常分支——重建会话从零再传一遍即可。
+ */
+export function getUpload(uploadId: string): Promise<UploadStatusDto | null> {
+  return request<UploadStatusDto>(`${ApiPath.uploads}/${uploadId}`).catch((cause: unknown) => {
+    if (cause instanceof ApiError && cause.status === 404) return null;
+    throw cause;
+  });
+}
+
 export function abortUpload(uploadId: string): Promise<void> {
   return request<{ aborted: boolean }>(`${ApiPath.uploads}/${uploadId}`, { method: "DELETE" }).then(
     () => undefined,
   );
 }
+
+/** [Uploader] 的网络依赖实现：控制器只管状态机，HTTP 细节留在这里。 */
+export const uploadTransport: UploadTransport = {
+  create: createUpload,
+  status: getUpload,
+  chunk: uploadChunk,
+  complete: completeUpload,
+  abort: abortUpload,
+};
 
 // ---------------------------------------------------------------- 下载
 

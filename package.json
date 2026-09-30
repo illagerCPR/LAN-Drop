@@ -12,6 +12,7 @@
     "dev": "pnpm --filter @lan-drop/server dev",
     "start": "pnpm --filter @lan-drop/server start",
     "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
     "web:dev": "pnpm --filter @lan-drop/web dev",
     "web:build": "pnpm --filter @lan-drop/web build",
     "bundle": "node scripts/package.mjs --target stage",

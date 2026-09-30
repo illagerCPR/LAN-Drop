@@ -11,6 +11,9 @@ import io.github.illagercpr.landrop.net.LanDropSocket
 import io.github.illagercpr.landrop.net.SocketState
 import io.github.illagercpr.landrop.net.WsEvent
 import io.github.illagercpr.landrop.net.toUserMessage
+import io.github.illagercpr.landrop.protocol.MESSAGE_KIND_LINK
+import io.github.illagercpr.landrop.protocol.MESSAGE_KIND_TEXT
+import io.github.illagercpr.landrop.protocol.isHttpUrl
 import java.util.Collections
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -153,7 +156,10 @@ class MessageRepository(
     /** 发送文字消息，返回服务端落库后的权威副本。失败时抛出异常由调用方展示。 */
     suspend fun sendText(text: String): MessageEntity {
         val connection = store.connection.value ?: error("尚未配对服务器")
-        val dto = api.sendText(connection, text)
+        // 整段就是一个 http(s) 链接时按 link 类型发，两端才会都渲染成可点链接
+        // （与 Web 端同一条规则，见 [isHttpUrl]）
+        val kind = if (isHttpUrl(text)) MESSAGE_KIND_LINK else MESSAGE_KIND_TEXT
+        val dto = api.sendText(connection, text, kind)
         val entity = dto.toEntity(connection.deviceId)
         dao.upsert(entity)
         return entity

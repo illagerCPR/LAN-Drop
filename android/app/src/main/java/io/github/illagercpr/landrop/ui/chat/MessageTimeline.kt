@@ -1,6 +1,10 @@
 package io.github.illagercpr.landrop.ui.chat
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,21 +24,32 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import io.github.illagercpr.landrop.data.local.MessageDirection
 import io.github.illagercpr.landrop.data.local.MessageEntity
 import io.github.illagercpr.landrop.media.fitInside
+import io.github.illagercpr.landrop.protocol.isHttpUrl
 import io.github.illagercpr.landrop.ui.common.formatBytes
 import io.github.illagercpr.landrop.ui.common.formatTimestamp
 
 private const val KIND_FILE = "file"
+private const val KIND_LINK = "link"
 
 /**
  * 图片预览的尺寸上限。
@@ -95,10 +110,7 @@ fun MessageRow(
                 if (message.kind == KIND_FILE) {
                     FileBody(message, downloadState, thumbnail, onDownload, onOpenImage)
                 } else {
-                    Text(
-                        text = message.text.orEmpty(),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
+                    MessageText(message)
                 }
 
                 Text(
@@ -112,6 +124,57 @@ fun MessageRow(
             }
         }
     }
+}
+
+/**
+ * 文字正文。
+ *
+ * 只有「整段就是一个 http(s) 链接」的消息才做成可点链接（[isHttpUrl]，与 Web 端同一规则）；
+ * 夹在句子里的 URL 保持纯文本——把长句里的一段染成链接反而更难读，而且规则一放宽，
+ * 两端就开始对同一句话给出不同渲染。`kind` 是发送方自填的，服务端不校验，所以这里再判一次。
+ */
+@Composable
+private fun MessageText(message: MessageEntity) {
+    val text = message.text.orEmpty()
+    val context = LocalContext.current
+
+    if (message.kind != KIND_LINK || !isHttpUrl(text)) {
+        Text(text = text, style = MaterialTheme.typography.bodyLarge)
+        return
+    }
+
+    val linkColor = MaterialTheme.colorScheme.primary
+    val annotated = remember(text, linkColor) {
+        buildAnnotatedString {
+            withLink(
+                LinkAnnotation.Url(
+                    url = text,
+                    styles = TextLinkStyles(
+                        style = SpanStyle(
+                            color = linkColor,
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                    ),
+                    // 自定义监听器取代默认的 UriHandler：链接打不开时给一句人话，
+                    // 而不是把 ActivityNotFoundException 抛到界面上
+                    linkInteractionListener = object : LinkInteractionListener {
+                        override fun onClick(link: LinkAnnotation) {
+                            openExternalLink(context, text)
+                        }
+                    },
+                ),
+            ) { append(text) }
+        }
+    }
+
+    Text(text = annotated, style = MaterialTheme.typography.bodyLarge)
+}
+
+/** 用系统浏览器打开链接；没有可处理的应用时提示，不崩。 */
+private fun openExternalLink(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+    val opened = runCatching { context.startActivity(intent) }.isSuccess
+    if (!opened) Toast.makeText(context, "没有可以打开这个链接的应用", Toast.LENGTH_SHORT).show()
 }
 
 /**

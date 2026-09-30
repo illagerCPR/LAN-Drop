@@ -11,7 +11,8 @@
 
 ```bash
 pnpm install
-pnpm -r typecheck           # 全仓类型检查；没有测试框架，这就是 TS 侧的验证手段，提交前必跑
+pnpm -r typecheck           # 全仓类型检查，提交前必跑
+pnpm -r test                # TS 侧单测（node --test 直接跑 .ts，无测试框架）：26 项
 pnpm dev                    # 服务端 --watch，监听 0.0.0.0:8787
 pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev）
 node scripts/smoke-api.mjs  # 67 项端到端冒烟（HTTP + WS + 断点续传 + UDP 发现）；必须先起服务端，且必须本机跑（配对码仅回环可读）
@@ -25,6 +26,10 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 
 - 验证顺序：服务端改动后**重启进程**再跑 smoke（静态根、数据目录在 boot 时确定）；`node --watch` 只热载 src。
 - `apps/web/dist` 不存在时服务端退回 `apps/server/public` 冒烟页——Web 页面不对先确认有没有 build 过、服务端有没有重启。
+- **单测是分层的，别只跑一边**：纯逻辑（尺寸算术、状态机、规则判定）放单测；跨进程行为放 `smoke-api.mjs`；
+  真机/真浏览器行为只能实机验。TS 侧单测在 `packages/protocol/test`、`apps/web/test`，
+  用 Node 内建 `node --test`（Node 24 直接跑 `.ts`，因此这两个包需要在 tsconfig 里写 `"types": ["node"]`，
+  否则 `node:` 前缀的内建模块解析不到类型）。
 
 ## 环境与镜像（本机硬事实，勿改回官方源）
 
@@ -149,6 +154,32 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   `cache/thumbnails/` 重启应用——缩略图还能重建，就只可能来自本机副本（实测重建结果与
   先前逐字节相同）。全程不需要截图或整屏 dump。
 
+### 传输暂停/继续与链接消息（P4-4）
+
+- **上传状态机在 `apps/web/src/upload.ts`（`Uploader`），不要把它写回组件里**：它之所以能被
+  `node --test` 直接单测，是因为网络能力经 `UploadTransport` 注入、与 React 无关。界面只拿
+  `UploadSnapshot[]` 渲染。四条不变量（都有单测）：
+  1. **暂停在分片之间生效**，不掐断在飞的请求——中途断流会留下半片残字节，把状态机拖进
+     「服务端认为收到了、客户端以为没发」的模糊地带；界面用 `pausing` 显示「暂停中…」。
+  2. **每次开工（继续/重试）都先 `GET /uploads/:id` 校准锚点**，绝不信本地 `offset`：
+     分片写进去了而响应在回程丢了时，本地必然落后，从本地续就是一次注定 409 的重发。
+  3. **会话不在（404）或已 `aborted` → 重建会话从零再来**；连续 3 片服务端进度不前进即判失败
+     （否则会话在别处被中止时就是一个安静的死循环）。
+  4. **队列只挑 `queued` 的任务**（暂停的不占队列，后面的文件照发）。代价是 `#runJob` 返回前
+     必须让任务离开 `running`/`pausing`，收尾处有 `#settle` 兜底。
+- **「什么算链接」只有一条规则：协议包的 `isLinkText`（只认 http/https）**。发送端据此决定 `kind`，
+  两端渲染端据此决定是否做成可点链接；Android 侧是 `protocol/LinkText.kt` 镜像，
+  两边各有一张 **15 条边界表**的单测（`packages/protocol/test/link.test.ts`、`protocol/LinkTextTest`），
+  改一边必须改另一边。**只认 http/https 是安全边界**：`kind` 由发送方自填、服务端不做语义校验，
+  旧代码直接 `href={message.text}`，`javascript:` 能当链接发出去。
+- Android 发送纯 URL 一直落成 `kind=text`（`LanDropApi.sendText` 的默认参数），已经修掉；
+  「夹在句子里的 URL」仍是纯文本，**不要**顺手加 linkify——那会让两端对同一句话给出不同渲染。
+- Compose 里 `LinkInteractionListener` 是 `androidx.compose.ui.text` 的**顶层**接口（不在
+  `LinkAnnotation` 内），且自定义监听器会**取代**默认 `UriHandler`，所以「没有应用能打开」
+  要自己 `runCatching` + Toast。
+- 真机验「链接可点」不需要截图：`input tap` 链接节点的中心，再看
+  `dumpsys activity activities | grep topResumedActivity` 是否变成浏览器；点纯文本做负向对照。
+
 ## Web（apps/web）
 
 - tsconfig 开 `exactOptionalPropertyTypes`：给可选字段显式传 `undefined` 会编译错，用条件展开（`...(x ? { k: v } : {})`）。
@@ -167,7 +198,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 86 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术。
+- `./gradlew :app:testDebugUnitTest` 是 89 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐）。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）

@@ -53,6 +53,19 @@ export type WsEventTypeValue = (typeof WsEventType)[keyof typeof WsEventType];
 /** 消息类型。 */
 export type MessageKind = "text" | "link" | "file";
 
+/**
+ * 一段文字是否「整段就是一个 http(s) 链接」。
+ *
+ * 这既是发送端判定 `link` 的依据，也是渲染端把消息变成可点链接的**唯一**许可条件：
+ * 两个客户端必须用同一条规则，否则同一句话在手机上是链接、在网页上是纯文本。
+ * 只认 http/https——`kind` 由发送方自填、服务端不做语义校验，而 `javascript:` 之类的
+ * 伪协议一旦进了 `<a href>` 就是注入（Android 侧的同名实现见
+ * `android/.../protocol/LinkText.kt`，改动必须两边同步）。
+ */
+export function isLinkText(text: string): boolean {
+  return /^https?:\/\/\S+$/i.test(text.trim());
+}
+
 /** 传输方向。 */
 export type TransferDirection = "upload" | "download";
 

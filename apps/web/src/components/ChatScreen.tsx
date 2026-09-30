@@ -4,6 +4,7 @@ import type { UIEvent } from "react";
 import {
   ApiPath,
   WsEventType,
+  isLinkText,
   type DevicePresencePayload,
   type MessageDto,
   type ServerInfoDto,
@@ -15,28 +16,30 @@ import {
 import {
   ApiError,
   clearMessages,
-  completeUpload,
-  createUpload,
   credentials,
   listMessages,
   sendText,
-  uploadChunk,
+  uploadTransport,
 } from "../api.ts";
+import { Uploader, type UploadPhase, type UploadSnapshot } from "../upload.ts";
 import { LanDropSocket, type WsStatus } from "../ws.ts";
 import { MessageList } from "./MessageList.tsx";
-
-/** 上传面板里的单条传输。 */
-interface TransferUi {
-  id: string;
-  name: string;
-  /** 0~1 */
-  progress: number;
-  error: string | null;
-}
 
 const PAGE_SIZE = 1000;
 const TYPING_THROTTLE_MS = 2000;
 const TYPING_DISPLAY_MS = 4000;
+/** 上传成功后让「完成」在面板上停留一下再消失 */
+const DONE_LINGER_MS = 2500;
+
+/** 传输阶段的中文说明；百分比由进度条旁边的数字单独给。 */
+const PHASE_LABEL: Record<UploadPhase, string> = {
+  queued: "排队中",
+  running: "上传中",
+  pausing: "暂停中…",
+  paused: "已暂停",
+  failed: "失败",
+  done: "完成",
+};
 
 /**
  * 聊天主界面。
@@ -44,7 +47,8 @@ const TYPING_DISPLAY_MS = 4000;
  * 数据流：
  *   - 进场：从 seq=0 全量分页拉取历史（协议约定），WS 并行建立；
  *   - 实时：WS `message.new` 增量追加，`hello.latestSeq` 驱动缺口补拉；
- *   - 发送：文字走 POST，文件走「建会话 → 分片追加 → 完成」三段式；
+ *   - 发送：文字走 POST，文件交给 [Uploader]（建会话 → 分片追加 → 完成，
+ *     支持暂停/继续/取消，进度全部以服务端确认的字节数为准）；
  *   - 全程以服务端 seq 为唯一去重/排序依据，重复投递无副作用。
  */
 export function ChatScreen(props: { info: ServerInfoDto }) {
@@ -53,7 +57,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
   const [messages, setMessages] = useState<MessageDto[]>([]);
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
   const [onlineCount, setOnlineCount] = useState(0);
-  const [transfers, setTransfers] = useState<TransferUi[]>([]);
+  const [transfers, setTransfers] = useState<UploadSnapshot[]>([]);
   const [dragging, setDragging] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -68,6 +72,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
   const typingTimerRef = useRef<number | null>(null);
   const lastTypingSentRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dismissedRef = useRef(new Set<string>());
 
   // ---------------------------------------------------------------- 消息合并
 
@@ -84,6 +89,23 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
       if (message.seq > seqRef.current) seqRef.current = message.seq;
     }
   }, []);
+
+  // ---------------------------------------------------------------- 上传队列
+
+  /**
+   * 上传控制器只建一次。
+   *
+   * 它持有每个任务的 `uploadId` 与服务端确认的进度，重建等于把续传锚点丢掉——
+   * 所以不能随渲染重建，也不能放在会被重挂的组件里。
+   */
+  const [uploader] = useState(
+    () =>
+      new Uploader({
+        transport: uploadTransport,
+        onChange: setTransfers,
+        onComplete: (message) => appendMessages([message]),
+      }),
+  );
 
   const reportError = useCallback((cause: unknown) => {
     setActionError(cause instanceof Error ? cause.message : String(cause));
@@ -206,9 +228,8 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
     setSending(true);
     setActionError(null);
     try {
-      // 纯 URL 且无空白时按链接类型发，前端可渲染成可点击的锚点
-      const isLink = /^https?:\/\/\S+$/i.test(text);
-      const message = await sendText(isLink ? "link" : "text", text);
+      // 整段就是一个链接时按 link 类型发，两端都会渲染成可点击的锚点
+      const message = await sendText(isLinkText(text) ? "link" : "text", text);
       appendMessages([message]);
       setDraft("");
     } catch (cause) {
@@ -229,62 +250,25 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
 
   // ---------------------------------------------------------------- 发送文件
 
-  const uploadFile = useCallback(
-    async (file: File) => {
-      const transferId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setTransfers((prev) => [...prev, { id: transferId, name: file.name, progress: 0, error: null }]);
-
-      let errorMessage: string | null = null;
-      try {
-        const created = await createUpload({
-          name: file.name,
-          size: file.size,
-          ...(file.type.length > 0 ? { mime: file.type } : {}),
-        });
-
-        let offset = created.receivedBytes;
-        while (offset < file.size) {
-          const end = Math.min(offset + created.chunkSize, file.size);
-          // 409 时服务端会回传真实 offset，这里直接从对齐位置继续，天然支持断点续传
-          const result = await uploadChunk(created.uploadId, offset, file.slice(offset, end));
-          offset = result.receivedBytes;
-          const ratio = file.size > 0 ? offset / file.size : 1;
-          setTransfers((prev) =>
-            prev.map((transfer) =>
-              transfer.id === transferId ? { ...transfer, progress: ratio } : transfer,
-            ),
-          );
-        }
-
-        const message = await completeUpload(created.uploadId);
-        appendMessages([message]);
-      } catch (cause) {
-        errorMessage = cause instanceof Error ? cause.message : String(cause);
-        setTransfers((prev) =>
-          prev.map((transfer) =>
-            transfer.id === transferId ? { ...transfer, error: errorMessage } : transfer,
-          ),
-        );
-      } finally {
-        const delay = errorMessage === null ? 2500 : 8000;
-        window.setTimeout(() => {
-          setTransfers((prev) => prev.filter((transfer) => transfer.id !== transferId));
-        }, delay);
-      }
-    },
-    [appendMessages],
-  );
-
   const handleFiles = useCallback(
-    async (files: FileList | null) => {
+    (files: FileList | null) => {
       if (files === null || files.length === 0) return;
-      // 串行上传：避免多个大文件并发抢占局域网带宽与服务器磁盘
-      for (const file of Array.from(files)) {
-        await uploadFile(file);
-      }
+      // 一次性全部入队：控制器内部串行执行（避免多个大文件并发抢占局域网带宽），
+      // 排队中的任务会立刻出现在面板里，用户能看到「还有几个没发」。
+      for (const file of Array.from(files)) uploader.add(file);
     },
-    [uploadFile],
+    [uploader],
   );
+
+  // 完成的任务在面板上停留一会儿再消失，让人看清「传完了」而不是闪一下没了。
+  // 失败的任务留着不动：它带着「重试」「移除」两个按钮，得等用户处理。
+  useEffect(() => {
+    for (const transfer of transfers) {
+      if (transfer.phase !== "done" || dismissedRef.current.has(transfer.id)) continue;
+      dismissedRef.current.add(transfer.id);
+      window.setTimeout(() => uploader.dismiss(transfer.id), DONE_LINGER_MS);
+    }
+  }, [transfers, uploader]);
 
   // ---------------------------------------------------------------- 清空记录
 
@@ -329,7 +313,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
         event.preventDefault();
         dragDepthRef.current = 0;
         setDragging(false);
-        void handleFiles(event.dataTransfer.files);
+        handleFiles(event.dataTransfer.files);
       }}
     >
       <header className="chat-header">
@@ -359,21 +343,14 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
       {transfers.length > 0 && (
         <div className="transfer-panel">
           {transfers.map((transfer) => (
-            <div key={transfer.id} className={`transfer${transfer.error !== null ? " failed" : ""}`}>
-              <div className="transfer-row">
-                <span className="transfer-name">{transfer.name}</span>
-                <span className="transfer-percent">
-                  {transfer.error !== null ? "失败" : `${Math.round(transfer.progress * 100)}%`}
-                </span>
-              </div>
-              <div className="transfer-bar">
-                <div
-                  className="transfer-fill"
-                  style={{ width: `${Math.round(transfer.progress * 100)}%` }}
-                />
-              </div>
-              {transfer.error !== null && <div className="transfer-error">{transfer.error}</div>}
-            </div>
+            <TransferRow
+              key={transfer.id}
+              transfer={transfer}
+              onPause={() => uploader.pause(transfer.id)}
+              onResume={() => uploader.resume(transfer.id)}
+              onRetry={() => uploader.retry(transfer.id)}
+              onCancel={() => uploader.cancel(transfer.id)}
+            />
           ))}
         </div>
       )}
@@ -394,7 +371,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
           multiple
           hidden
           onChange={(event) => {
-            void handleFiles(event.target.files);
+            handleFiles(event.target.files);
             event.target.value = "";
           }}
         />
@@ -422,7 +399,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
           onPaste={(event) => {
             if (event.clipboardData.files.length > 0) {
               event.preventDefault();
-              void handleFiles(event.clipboardData.files);
+              handleFiles(event.clipboardData.files);
             }
           }}
         />
@@ -441,6 +418,79 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
           <div className="drop-hint">松开即可发送文件</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 上传面板里的一行。
+ *
+ * 百分号显示的是**服务端已确认落盘**的字节数，不是「已经发出去多少」——
+ * 断点续传的锚点就是这个数，界面必须与它一致，否则暂停时看到的数字会对不上账。
+ */
+function TransferRow(props: {
+  transfer: UploadSnapshot;
+  onPause: () => void;
+  onResume: () => void;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const { transfer, onPause, onResume, onRetry, onCancel } = props;
+  const ratio = transfer.size > 0 ? Math.min(1, transfer.offset / transfer.size) : 1;
+  const percent = Math.round(ratio * 100);
+
+  const active =
+    transfer.phase === "queued" ||
+    transfer.phase === "running" ||
+    transfer.phase === "pausing" ||
+    transfer.phase === "paused";
+
+  return (
+    <div className={`transfer ${transfer.phase}`}>
+      <div className="transfer-row">
+        <span className="transfer-name" title={transfer.name}>
+          {transfer.name}
+        </span>
+        <span className="transfer-percent">
+          {transfer.error !== null
+            ? PHASE_LABEL.failed
+            : active
+              ? `${PHASE_LABEL[transfer.phase]} ${percent}%`
+              : PHASE_LABEL[transfer.phase]}
+        </span>
+      </div>
+      <div className="transfer-bar">
+        <div className="transfer-fill" style={{ width: `${percent}%` }} />
+      </div>
+      {transfer.error !== null && <div className="transfer-error">{transfer.error}</div>}
+
+      <div className="transfer-actions">
+        {transfer.phase === "running" || transfer.phase === "queued" ? (
+          <button type="button" className="ghost" onClick={onPause}>
+            暂停
+          </button>
+        ) : null}
+        {transfer.phase === "pausing" ? (
+          <button type="button" className="ghost" disabled>
+            暂停中…
+          </button>
+        ) : null}
+        {transfer.phase === "paused" ? (
+          <button type="button" className="ghost" onClick={onResume}>
+            继续
+          </button>
+        ) : null}
+        {transfer.phase === "failed" ? (
+          <button type="button" className="ghost" onClick={onRetry}>
+            重试
+          </button>
+        ) : null}
+        {transfer.phase !== "done" ? (
+          <button type="button" className="ghost" onClick={onCancel}>
+            {transfer.phase === "failed" ? "移除" : "取消"}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
