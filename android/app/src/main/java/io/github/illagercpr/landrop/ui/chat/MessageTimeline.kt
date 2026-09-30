@@ -1,5 +1,8 @@
 package io.github.illagercpr.landrop.ui.chat
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
@@ -18,14 +22,28 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.illagercpr.landrop.data.local.MessageDirection
 import io.github.illagercpr.landrop.data.local.MessageEntity
+import io.github.illagercpr.landrop.media.fitInside
 import io.github.illagercpr.landrop.ui.common.formatBytes
 import io.github.illagercpr.landrop.ui.common.formatTimestamp
 
 private const val KIND_FILE = "file"
+
+/**
+ * 图片预览的尺寸上限。
+ *
+ * 宽度小于气泡上限（300dp）是有意的：图片顶到气泡两边会让「这是谁发的、
+ * 从哪儿开始」变得难以分辨；留一圈底色，气泡的方向感才保得住。
+ */
+internal val PREVIEW_MAX_WIDTH = 240.dp
+internal val PREVIEW_MAX_HEIGHT = 260.dp
 
 /**
  * 一条消息。
@@ -37,7 +55,9 @@ private const val KIND_FILE = "file"
 fun MessageRow(
     message: MessageEntity,
     downloadState: DownloadState?,
+    thumbnail: Bitmap?,
     onDownload: (MessageEntity) -> Unit,
+    onOpenImage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val outbound = message.direction == MessageDirection.OUTBOUND
@@ -73,7 +93,7 @@ fun MessageRow(
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 if (message.kind == KIND_FILE) {
-                    FileBody(message, downloadState, onDownload)
+                    FileBody(message, downloadState, thumbnail, onDownload, onOpenImage)
                 } else {
                     Text(
                         text = message.text.orEmpty(),
@@ -94,14 +114,67 @@ fun MessageRow(
     }
 }
 
-/** 文件消息正文：文件名 + 大小 + 下载入口（或下载进度）。 */
+/**
+ * 图片消息的缩略图。
+ *
+ * 点击行为分三种：收到的图已下载 → 交给系统查看器打开本地副本；还没下载 → 等同于
+ * 「下载」按钮（点图就是想看它，先下下来最直接）；自己发出的 → 不可点，气泡下面
+ * 已经写了「已发送到 PC」，再点开自己刚发的那张没有意义。
+ */
+@Composable
+private fun ImagePreview(
+    bitmap: Bitmap,
+    message: MessageEntity,
+    downloadState: DownloadState?,
+    onDownload: (MessageEntity) -> Unit,
+    onOpenImage: (String) -> Unit,
+) {
+    val density = LocalDensity.current
+    val size = with(density) {
+        fitInside(
+            width = bitmap.width,
+            height = bitmap.height,
+            maxWidth = PREVIEW_MAX_WIDTH.roundToPx(),
+            maxHeight = PREVIEW_MAX_HEIGHT.roundToPx(),
+        )
+    }
+    if (size.width <= 0 || size.height <= 0) return
+
+    val onClick: (() -> Unit)? = when {
+        message.direction == MessageDirection.OUTBOUND -> null
+
+        downloadState?.completed == true -> downloadState.localUri?.let { uri -> { onOpenImage(uri) } }
+
+        else -> ({ onDownload(message) })
+    }
+
+    Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = message.fileName,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+            .padding(bottom = 6.dp)
+            .size(
+                width = with(density) { size.width.toDp() },
+                height = with(density) { size.height.toDp() },
+            )
+            .clip(RoundedCornerShape(10.dp))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+    )
+}
+
+/** 文件消息正文：缩略图（图片才有）+ 文件名 + 大小 + 下载入口（或下载进度）。 */
 @Composable
 private fun FileBody(
     message: MessageEntity,
     downloadState: DownloadState?,
+    thumbnail: Bitmap?,
     onDownload: (MessageEntity) -> Unit,
+    onOpenImage: (String) -> Unit,
 ) {
     Column {
+        thumbnail?.let { ImagePreview(it, message, downloadState, onDownload, onOpenImage) }
+
         Text(
             text = message.fileName ?: "文件",
             style = MaterialTheme.typography.bodyLarge,
@@ -218,6 +291,8 @@ data class DownloadState(
     val fraction: Float?,
     val completed: Boolean = false,
     val failed: String? = null,
+    /** 下载完成后的本地副本（MediaStore 行），预览与「打开」都用它。 */
+    val localUri: String? = null,
 )
 
 /** 空会话时的引导文案。 */

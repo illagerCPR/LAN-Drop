@@ -1,5 +1,6 @@
 package io.github.illagercpr.landrop.ui.chat
 
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,6 +12,8 @@ import io.github.illagercpr.landrop.data.repo.MessageRepository
 import io.github.illagercpr.landrop.data.repo.PairingRepository
 import io.github.illagercpr.landrop.data.repo.TransferRepository
 import io.github.illagercpr.landrop.data.prefs.SettingsStore
+import io.github.illagercpr.landrop.media.ThumbnailLoader
+import io.github.illagercpr.landrop.media.ThumbnailSource
 import io.github.illagercpr.landrop.net.toUserMessage
 import io.github.illagercpr.landrop.share.SharedPayload
 import java.util.UUID
@@ -49,6 +52,7 @@ class ChatViewModel(
     private val transfers: TransferRepository,
     private val pairing: PairingRepository,
     private val settings: SettingsStore,
+    private val thumbnails: ThumbnailLoader,
 ) : ViewModel() {
 
     val timeline = messages.timeline
@@ -168,6 +172,15 @@ class ChatViewModel(
             messageId = message.id,
         )
     }
+
+    /**
+     * 时间线里一条消息的图片预览（见 [io.github.illagercpr.landrop.media.ThumbnailLoader]）。
+     *
+     * 取哪一份字节由 [thumbnailSourcesOf] 在界面侧算好（它依赖传输记录，而那正是界面
+     * 已经在观察的数据）；这里只管把候选来源依次试一遍。返回 null 只是「没有预览」。
+     */
+    suspend fun thumbnailFor(sources: List<ThumbnailSource>, targetPx: Int): Bitmap? =
+        thumbnails.load(sources, targetPx)
 
     fun cancelTransfer(transferId: String) {
         transfers.cancel(transferId)

@@ -120,6 +120,35 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   两个坑：整条命令要加单引号，否则本机 shell 会把 `*/*` 当 glob 展开；
   验证数量要用**无 limit 的聚合查询**（`limit 5` 会让计数卡在 5，把「成功」看成「被吞」）。
 
+### 时间线图片缩略图（P4-3）
+
+- **服务端没有、也不该有缩略图接口**：便携包是 esbuild 打出的自包含单文件，`sharp` 这类原生
+  图像库进不去。所以「服务端有」的那条路是**拉原图 + 本地降采样**，缩略图逻辑因此全在客户端
+  （`media/ThumbnailLoader.kt`）。三条随之而来的约束：只在该行被组合时取（LazyColumn 天生如此，
+  滑走即取消）、结果按 `fileId@档位` 落盘缓存、并发上限 2（别和用户正在传的文件抢带宽）。
+- **解码用 `ImageDecoder`，不是 `BitmapFactory`**：手机竖拍照片的方向写在 EXIF 里，
+  `BitmapFactory` 不理会它，解出来是**躺倒的**（实测 2000×1500 + `Orientation=6` 会显示成横图）；
+  `ImageDecoder`（API 28+，minSdk 33 已覆盖）按 EXIF 摆正。解码后立刻缩到目标长边再进缓存——
+  缓存里存的必须是**显示用的那一份**，否则一张 4000×3000 就是 48 MB 堆。
+  另：`decoder.allocator` 必须设 `ALLOCATOR_SOFTWARE`，硬件位图不能作为缩放源。
+- **取图顺序按代价排，失败顺延**（`media/ThumbnailSource.kt` 的 `thumbnailSourcesOf`，
+  纯函数、可 JVM 单测）：① 已下载的本机副本 → ② 本机发出时的源文件 → ③ 服务端原图。
+  ② 之所以要靠后且必须能顺延：`ACTION_SEND` 的授权活不过进程，SAF 的长期授权上传完就
+  `release` 了——两种情况都实测失效过。③ 有 24 MB 上限，超过就只显示文件卡片。
+- **正在下载这条消息时不取服务端原图**：自动接收一开，消息刚到就开始下载，时间线同时在组合，
+  不挡一下就是把同一份字节传两遍（规则在纯函数里，单测钉住）。
+- **预览尺寸自己算，不要交给 `ContentScale.Fit`**：Fit 只缩放画面，布局仍占满约束，
+  竖图会被塞进一个横着多出空白的大框里。`fitInside`（`media/ThumbnailGeometry.kt`）直接给出
+  布局尺寸，不放大超过原图（小图不糊）。
+- 降采样判据是**长边**不小于目标：按「两条边都不小于目标」来判，16:9 的图会被当成方图，
+  2560×1440 一点不降地整张解进内存（14 MB），而 1280×720 已经够清楚。
+- 真机验收可以完全不动屏幕：① 服务端取图会在 `cache/thumbnails/<fileId>-<档位>.webp` 留下
+  **缩放后的**成品，尺寸即证据（EXIF 那张是 768×1024，没 EXIF 的同尺寸图是 1024×768）；
+  ② 无障碍节点（`content-desc` = 文件名）的 bounds 就是**实际渲染尺寸**，可与 `fitInside`
+  的算术逐像素对账；③ 想证明「下载后改读本机副本」，把服务端那份原图**移走**再清空
+  `cache/thumbnails/` 重启应用——缩略图还能重建，就只可能来自本机副本（实测重建结果与
+  先前逐字节相同）。全程不需要截图或整屏 dump。
+
 ## Web（apps/web）
 
 - tsconfig 开 `exactOptionalPropertyTypes`：给可选字段显式传 `undefined` 会编译错，用条件展开（`...(x ? { k: v } : {})`）。
@@ -138,7 +167,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 56 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容）。
+- `./gradlew :app:testDebugUnitTest` 是 86 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）

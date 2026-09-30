@@ -9,6 +9,7 @@ import io.github.illagercpr.landrop.data.repo.MessageRepository
 import io.github.illagercpr.landrop.data.repo.PairingRepository
 import io.github.illagercpr.landrop.data.repo.TransferRepository
 import io.github.illagercpr.landrop.data.repo.TransferServiceLauncher
+import io.github.illagercpr.landrop.media.ThumbnailLoader
 import io.github.illagercpr.landrop.net.HttpClientProvider
 import io.github.illagercpr.landrop.net.LanDropApi
 import io.github.illagercpr.landrop.net.LanDropSocket
@@ -50,6 +51,9 @@ class AppContainer(context: Context) {
     private val database = LanDropDatabase.get(appContext)
 
     private val api = LanDropApi(httpClient, json)
+
+    /** 时间线图片预览：内存 + 磁盘缓存；本机已有副本优先，其次回服务端拉原图降采样。 */
+    val thumbnails = ThumbnailLoader(appContext, api, connectionStore)
 
     private val socket = LanDropSocket(httpClient, json, appScope)
 

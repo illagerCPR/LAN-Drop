@@ -1,7 +1,12 @@
 package io.github.illagercpr.landrop.ui.chat
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -38,12 +43,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -54,6 +62,8 @@ import io.github.illagercpr.landrop.data.local.TransferDirection
 import io.github.illagercpr.landrop.data.local.TransferEntity
 import io.github.illagercpr.landrop.data.local.TransferState
 import io.github.illagercpr.landrop.data.repo.SyncState
+import io.github.illagercpr.landrop.media.ThumbnailSource
+import io.github.illagercpr.landrop.media.thumbnailSourcesOf
 import io.github.illagercpr.landrop.net.SocketState
 import io.github.illagercpr.landrop.ui.common.progressFraction
 
@@ -205,13 +215,16 @@ fun ChatScreen(
                 Timeline(
                     timeline = timeline,
                     outbox = outbox,
+                    transfers = transfers,
                     listState = listState,
                     downloads = downloads,
                     viewModel = viewModel,
+                    loadThumbnail = viewModel::thumbnailFor,
                     onDownload = { message ->
                         ensureNotificationPermission()
                         viewModel.download(message)
                     },
+                    onOpenImage = { uri -> openLocalImage(context, uri) },
                 )
             }
         }
@@ -222,10 +235,13 @@ fun ChatScreen(
 private fun Timeline(
     timeline: List<MessageEntity>,
     outbox: List<OutboxItem>,
+    transfers: List<TransferEntity>,
     listState: LazyListState,
     downloads: Map<String, DownloadState>,
     viewModel: ChatViewModel,
+    loadThumbnail: suspend (List<ThumbnailSource>, Int) -> Bitmap?,
     onDownload: (MessageEntity) -> Unit,
+    onOpenImage: (String) -> Unit,
 ) {
     if (timeline.isEmpty() && outbox.isEmpty()) {
         EmptyTimeline(modifier = Modifier.fillMaxSize())
@@ -248,13 +264,63 @@ private fun Timeline(
         }
 
         items(timeline, key = { it.id }) { message ->
+            val download = downloads[message.id]
             MessageRow(
                 message = message,
-                downloadState = downloads[message.id],
+                downloadState = download,
+                thumbnail = rememberThumbnail(
+                    message = message,
+                    sources = thumbnailSourcesOf(message, transfers),
+                    load = loadThumbnail,
+                ),
                 onDownload = onDownload,
+                onOpenImage = onOpenImage,
             )
         }
     }
+}
+
+/**
+ * 一行的缩略图。
+ *
+ * 只在行真的被组合时才去取（LazyColumn 天生如此），滑走时 [produceState] 连带取消
+ * 取图协程——原图可能有几十 MB，不能让它继续在后台跑。
+ *
+ * 键直接取 [sources]：它们是数据类，按结构比较，所以传输进度每跳一次都不会重取；
+ * 只有「下载完成了、本机副本出现了」或「下载开始了、服务端那份先别取了」这类
+ * 真变化才会重跑一次（那时命中的其实是同一张缓存，代价可以忽略）。
+ */
+@Composable
+private fun rememberThumbnail(
+    message: MessageEntity,
+    sources: List<ThumbnailSource>,
+    load: suspend (List<ThumbnailSource>, Int) -> Bitmap?,
+): Bitmap? {
+    if (sources.isEmpty()) return null
+
+    val targetPx = with(LocalDensity.current) { previewTargetPx() }
+    return produceState<Bitmap?>(null, message.id, sources, targetPx) {
+        value = load(sources, targetPx)
+    }.value
+}
+
+/** 解码目标：预览盒子的长边。降采样到「刚好装进盒子」的清晰度，不多解一像素。 */
+private fun Density.previewTargetPx(): Int =
+    maxOf(PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT).roundToPx()
+
+/**
+ * 打开已下载的图片。
+ *
+ * 本应用不做全屏查看器：查看、分享、设为壁纸这些事系统图库做得更好，
+ * 这里只把本地副本（MediaStore 行）连同读授权交给它。
+ */
+private fun openLocalImage(context: Context, uri: String) {
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(Uri.parse(uri), "image/*")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+    val opened = runCatching { context.startActivity(intent) }.isSuccess
+    if (!opened) Toast.makeText(context, "没有可以打开这张图片的应用", Toast.LENGTH_SHORT).show()
 }
 
 @Composable
@@ -336,7 +402,11 @@ private fun List<TransferEntity>.toDownloadStates(): Map<String, DownloadState> 
         if (result.containsKey(transfer.messageId)) continue
 
         result[transfer.messageId] = when (transfer.state) {
-            TransferState.COMPLETED -> DownloadState(fraction = 1f, completed = true)
+            TransferState.COMPLETED -> DownloadState(
+                fraction = 1f,
+                completed = true,
+                localUri = transfer.localUri,
+            )
 
             TransferState.FAILED -> DownloadState(fraction = null, failed = transfer.error ?: "下载失败")
 

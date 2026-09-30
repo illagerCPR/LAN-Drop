@@ -38,7 +38,13 @@ fun AppRoot() {
     val chatViewModel: ChatViewModel = viewModel(
         factory = viewModelFactory {
             initializer {
-                ChatViewModel(container.messages, container.transfers, container.pairing, container.settings)
+                ChatViewModel(
+                    messages = container.messages,
+                    transfers = container.transfers,
+                    pairing = container.pairing,
+                    settings = container.settings,
+                    thumbnails = container.thumbnails,
+                )
             }
         },
     )
