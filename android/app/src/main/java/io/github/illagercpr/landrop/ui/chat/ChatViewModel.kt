@@ -12,6 +12,7 @@ import io.github.illagercpr.landrop.data.repo.PairingRepository
 import io.github.illagercpr.landrop.data.repo.TransferRepository
 import io.github.illagercpr.landrop.data.prefs.SettingsStore
 import io.github.illagercpr.landrop.net.toUserMessage
+import io.github.illagercpr.landrop.share.SharedPayload
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,13 @@ data class OutboxItem(
 ) {
     val failed: Boolean get() = error != null
 }
+
+/** 一次系统分享被处理的结果，调用方据此决定提示什么。 */
+data class ShareResult(
+    val textPrefilled: Boolean,
+    val filesQueued: Int,
+    val filesDropped: Int,
+)
 
 /**
  * 会话页状态。
@@ -115,6 +123,38 @@ class ChatViewModel(
     /** 发送文件；传输状态由传输记录页展示，这里只负责启动。 */
     fun sendFile(uri: Uri, mime: String?) {
         transfers.upload(uri, mime)
+    }
+
+    /** 多选批量发送：顺序上传，接收端看到的顺序与选择顺序一致。 */
+    fun sendFiles(uris: List<Uri>) {
+        transfers.uploadAll(uris)
+    }
+
+    /**
+     * 接收系统分享进来的内容（见 [io.github.illagercpr.landrop.share.ShareInbox]）。
+     *
+     * 文字**只预填不自动发送**：分享过来的往往还需要改一改，而自动发送是不可撤销的
+     * （服务端已经落库并推给对方了）。文件则必须当场开工——`ACTION_SEND` 的 URI
+     * 只有临时授权，拖到下一轮就没法读了。
+     *
+     * [canSendFiles] 为 false（尚未配对）时不排队上传，如实把它们计入 `filesDropped`：
+     * 那批 URI 反正留不住，与其排个注定失败的队，不如直接告诉用户先配对。
+     */
+    fun acceptShare(payload: SharedPayload, canSendFiles: Boolean): ShareResult {
+        var prefilled = false
+        payload.text?.let { text ->
+            draft = if (draft.isBlank()) text else "${draft.trimEnd()}\n$text"
+            prefilled = true
+        }
+
+        val sendable = if (canSendFiles) payload.uris else emptyList()
+        if (sendable.isNotEmpty()) transfers.uploadAll(sendable)
+
+        return ShareResult(
+            textPrefilled = prefilled,
+            filesQueued = sendable.size,
+            filesDropped = payload.uris.size - sendable.size,
+        )
     }
 
     fun download(message: MessageEntity) {

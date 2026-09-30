@@ -33,6 +33,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** SAF 选中文件的元信息。 */
@@ -95,6 +97,14 @@ class TransferRepository(
     private val jobs = mutableMapOf<String, Job>()
 
     /**
+     * 上传串行闸门。
+     *
+     * 上传一律排队：单发与批量共用同一把锁，避免「多选五个文件同时开五条连接」
+     * 把局域网带宽切成五份、并堆五条前台服务通知。下载不走这把锁（各下各的互不影响）。
+     */
+    private val uploadQueue = Mutex()
+
+    /**
      * 协程被取消时该怎么收尾。
      *
      * 暂停与取消在协程层面完全一样（都是 [CancellationException]），
@@ -114,13 +124,46 @@ class TransferRepository(
      * 用「记录 + 状态」表达比异常更适合。
      */
     fun upload(uri: Uri, mime: String?) {
+        scope.launch {
+            uploadQueue.withLock {
+                startUpload(uri, mime)
+            }
+        }
+    }
+
+    /**
+     * 批量上传（应用内多选、系统分享多文件）。
+     *
+     * **顺序发送，不并发**：局域网带宽就是瓶颈，同时开三条只会让每条都慢三倍，
+     * 还会同时堆三条前台服务通知；顺序发送还让接收端看到的顺序与用户选择顺序一致。
+     * 整批共用 [uploadQueue] 的锁，所以两批之间也不会互相插队。
+     */
+    fun uploadAll(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+
+        scope.launch {
+            uploadQueue.withLock {
+                for (uri in uris) {
+                    // 批内前一条失败不该拖累后面：startUpload 内部把错误写进记录，
+                    // 单条失败返回后继续下一条（用户在传输列表里逐条看到结果）。
+                    startUpload(uri, mime = null)
+                }
+            }
+        }
+    }
+
+    private suspend fun startUpload(uri: Uri, mime: String?) {
         // SAF 给的读权限默认只活到本进程结束。不落持久授权，进程被系统杀掉之后
         // 就算记着进度也打不开源文件，续传无从谈起。
+        //
+        // 系统分享进来的 URI 落不了持久授权（那是临时 grant），runCatching 会静默跳过，
+        // 于是它的可续传范围就只剩「本进程还活着」——见 share/ShareInbox.kt 的说明。
         takePersistableRead(uri)
 
-        startJob(UUID.randomUUID().toString()) { id ->
-            runUpload(id, uri, mime, existing = null)
-        }
+        val id = UUID.randomUUID().toString()
+        val job = startJob(id) { runUpload(id, uri, mime, existing = null) }
+        // 等这一条跑完再发下一条，批内顺序即用户选择顺序
+        job?.join()
     }
 
     /**
@@ -769,8 +812,9 @@ class TransferRepository(
 
     // ------------------------------------------------------------------ 工具
 
-    private fun startJob(transferId: String, block: suspend (String) -> Unit) {
-        if (jobs.containsKey(transferId)) return
+    /** 起一条传输协程并登记（返回 Job 供批量上传串行等待）。 */
+    private fun startJob(transferId: String, block: suspend (String) -> Unit): Job? {
+        if (jobs.containsKey(transferId)) return null
 
         // 先叫前台服务再起协程：文件传几分钟，用户几乎必然会锁屏或切走，
         // 没有前台服务进程会被冻结，传输就停在半路。
@@ -779,6 +823,7 @@ class TransferRepository(
         val job = scope.launch { block(transferId) }
         jobs[transferId] = job
         job.invokeOnCompletion { if (jobs[transferId] === job) jobs.remove(transferId) }
+        return job
     }
 
     private suspend fun setStateIfExists(transferId: String, state: String, error: String?) {
@@ -867,6 +912,12 @@ class TransferRepository(
                     .takeIf { it >= 0 && !cursor.isNull(it) }
                     ?.let { size = cursor.getLong(it) }
             }
+        }
+
+        // `file://` 来源（部分分享方给的就是裸路径）没有 provider，查不到 DISPLAY_NAME，
+        // 但路径末段就是文件名——否则界面上只会显示「file-1759…」这种时间戳名。
+        if (name == null && uri.scheme == "file") {
+            name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
         }
 
         val resolvedSize = size

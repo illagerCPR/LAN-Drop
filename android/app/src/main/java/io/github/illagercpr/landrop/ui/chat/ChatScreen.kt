@@ -185,9 +185,9 @@ fun ChatScreen(
                     draft = viewModel.draft,
                     onDraftChange = viewModel::onDraftChange,
                     onSend = viewModel::send,
-                    onPickFile = { uri, mime ->
+                    onPickFiles = { uris ->
                         ensureNotificationPermission()
-                        viewModel.sendFile(uri, mime)
+                        viewModel.sendFiles(uris)
                     },
                 )
             }
@@ -262,10 +262,14 @@ private fun ChatInputBar(
     draft: String,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
-    onPickFile: (android.net.Uri, String?) -> Unit,
+    onPickFiles: (List<android.net.Uri>) -> Unit,
 ) {
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { onPickFile(it, null) }
+    // 多选：`OpenMultipleDocuments` 与单选版一样带持久化读授权（SAF 授予），
+    // 所以批量发送的文件在进程被杀后仍然可以续传；系统分享进来的 URI 则不行（临时授权）。
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) onPickFiles(uris)
     }
 
     Surface(tonalElevation = 3.dp) {

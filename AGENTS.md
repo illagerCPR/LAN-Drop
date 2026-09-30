@@ -75,6 +75,34 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   `[Console]::OutputEncoding = [Text.Encoding]::UTF8`；`Start-Process`/`*>` 重定向**不会**
   创建目录，日志目录要先建好，否则现象是「服务端一行日志都没有」。
 
+### 系统分享面板与多选批量（P4-2）
+
+- **分享 Intent 会成为本任务的「基础 Intent」**（Android 的既有行为）。由此引出两条纪律：
+  1. MainActivity 必须是 `launchMode="singleTop"`，否则分享时会在栈上再叠一个实例，
+     两套输入框抢着消费同一次分享；
+  2. **不要**用 `savedInstanceState == null` 判断「是不是新的分享投递」来防重复——
+     任务带着保存状态重建时该判断为假，用户分享过来会毫无反应（比偶尔重复更糟，实测踩过）。
+     重复投递的正解是无界面中转 Activity（见 README 的已知问题）。
+- 分享落点在 `ui/AppRoot` 而不是聊天页：分享可能发生在**尚未配对**时，那时聊天页根本没被组合。
+  未配对时文件不入队（那批 URI 反正留不住），只 Toast 提示先配对。
+- `share/ShareInbox` 是进程级收件箱，**消费必须取出即清空**（`getAndUpdate { null }`），
+  否则一次重组就把同一批文件再发一遍。解析逻辑里只有 `normalizeShare(RawShare)` 与框架解耦，
+  新情况优先加在那里并用 `ShareIntentTest` 覆盖（现有 11 项）。
+- **`ACTION_SEND` 的 URI 是临时授权**：不能 `takePersistableUriPermission`（`takePersistableRead`
+  已 `runCatching` 兜住）。后果是分享进来的文件**只在本进程存续期内可读**，进程被杀后重新上传会
+  打不开源文件并落成永久失败——这是刻意的取舍，别去「修」成假装能续传。
+  应用内多选走的 SAF 才是持久授权。
+- 解析必须同时读 `EXTRA_STREAM`、`ClipData` 与 `Intent.data`：真实发送方多把 URI 放进 `ClipData`
+  （只有 `EXTRA_STREAM` 的分享**没有读授权**，实测表现为「无法确定文件大小」）；
+  同一批 URI 两边都有时要**去重**，否则同一张照片发两遍。`EXTRA_STREAM` 还可能是 `String`/`String[]`，
+  按 `Uri` 硬读会 `ClassCastException` **把应用崩掉**，所以有宽容兜底。
+- **上传一律串行**（`TransferRepository.uploadQueue`）：单发与批量共用一把锁。并发多选会把局域网带宽
+  切成几份并堆同样多的前台服务通知。下载不走这把锁。
+- 真机验收用 `am start -a android.intent.action.SEND …` 驱动即可（文字用 `--es`；单文件用
+  `-d <uri> --grant-read-uri-permission`；多文件用 `--esa android.intent.extra.STREAM a,b`）。
+  两个坑：整条命令要加单引号，否则本机 shell 会把 `*/*` 当 glob 展开；
+  验证数量要用**无 limit 的聚合查询**（`limit 5` 会让计数卡在 5，把「成功」看成「被吞」）。
+
 ## Web（apps/web）
 
 - tsconfig 开 `exactOptionalPropertyTypes`：给可选字段显式传 `undefined` 会编译错，用条件展开（`...(x ? { k: v } : {})`）。
@@ -93,7 +121,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 38 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格）。
+- `./gradlew :app:testDebugUnitTest` 是 51 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 11 项分享内容归一化（去重、`ClipData` 兜底、空白文字、非分享 action、String[] 兼容）。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）
