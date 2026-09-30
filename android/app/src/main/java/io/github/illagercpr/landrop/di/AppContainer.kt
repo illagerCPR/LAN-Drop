@@ -6,10 +6,13 @@ import io.github.illagercpr.landrop.data.prefs.ConnectionStore
 import io.github.illagercpr.landrop.data.repo.MessageRepository
 import io.github.illagercpr.landrop.data.repo.PairingRepository
 import io.github.illagercpr.landrop.data.repo.TransferRepository
+import io.github.illagercpr.landrop.data.repo.TransferServiceLauncher
 import io.github.illagercpr.landrop.net.HttpClientProvider
 import io.github.illagercpr.landrop.net.LanDropApi
 import io.github.illagercpr.landrop.net.LanDropSocket
 import io.github.illagercpr.landrop.net.ProtocolJson
+import io.github.illagercpr.landrop.notify.MessageNotifier
+import io.github.illagercpr.landrop.notify.TransferService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,9 +47,24 @@ class AppContainer(context: Context) {
 
     private val socket = LanDropSocket(httpClient, json, appScope)
 
-    val messages = MessageRepository(connectionStore, database, api, socket, appScope)
+    val messages = MessageRepository(
+        store = connectionStore,
+        db = database,
+        api = api,
+        socket = socket,
+        scope = appScope,
+        notifier = MessageNotifier(appContext),
+    )
 
-    val transfers = TransferRepository(appContext, connectionStore, database, api, appScope)
+    val transfers = TransferRepository(
+        context = appContext,
+        store = connectionStore,
+        db = database,
+        api = api,
+        scope = appScope,
+        // 前台服务与界面共用这个容器，因此服务里看到的传输状态就是界面上的那一份
+        foreground = TransferServiceLauncher { TransferService.start(appContext) },
+    )
 
     val pairing = PairingRepository(connectionStore, api, database)
 

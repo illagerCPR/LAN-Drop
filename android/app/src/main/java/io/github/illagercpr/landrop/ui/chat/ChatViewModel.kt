@@ -139,7 +139,10 @@ class ChatViewModel(
         transfers.resume(transferId)
     }
 
+    /** 回到前台 / 手动「立即同步」：补拉增量消息，并顺带核对服务端展示名。 */
     fun refresh() {
+        // 两条独立协程：改名只是展示信息，它失败不该影响同步状态的显示
+        viewModelScope.launch { pairing.refreshServerName() }
         viewModelScope.launch { messages.syncNow() }
     }
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  通知栏小图标。必须是「纯 alpha 形状」：系统会丢掉颜色、只取不透明区域重新着色，
+  所以这里只画一个向下的箭头 + 底座，不依赖任何颜色语义。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11,2h2v10h3.5L12,18 7.5,12H11zM5,20h14v2H5z" />
+</vector>

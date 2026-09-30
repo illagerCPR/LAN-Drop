@@ -42,7 +42,7 @@ class PairingRepository(
                     ),
                 )
             } else {
-                Result.success(info.serverName.ifBlank { "LAN-Drop 服务端" })
+                Result.success(info.serverName.ifBlank { "LAN-Drop" })
             }
         } catch (e: Exception) {
             Result.failure(IllegalStateException(e.toUserMessage()))
@@ -94,6 +94,22 @@ class PairingRepository(
             PairResult.Success(connection)
         } catch (e: Exception) {
             PairResult.Failure(e.toUserMessage())
+        }
+    }
+
+    /**
+     * 重新拉一次服务端展示名，并同步到本地。
+     *
+     * 配对时取过一次就不再更新的话，PC 改了主机名（或改了 `LAN_DROP_SERVER_NAME`）
+     * 手机侧会永远显示旧名字——而聊天页标题正是靠它回答「我在跟哪台机器说话」。
+     * 拿不到就静默放弃：这只是展示信息，不值得为它打断会话或弹错误。
+     */
+    suspend fun refreshServerName() {
+        val connection = store.connection.value ?: return
+        val info = runCatching { api.info(connection.baseUrl) }.getOrNull() ?: return
+        val name = info.serverName.trim()
+        if (name.isNotEmpty() && name != connection.serverName) {
+            store.updateServerName(name)
         }
     }
 

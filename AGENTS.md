@@ -38,6 +38,7 @@ cd android && ./gradlew :app:assembleDebug
 - 断点续传查询接口：`GET /api/v1/uploads/:id`（权威进度、`resumable`、`chunkSize`）、`GET /api/v1/uploads?state=open|completed|aborted`。均按设备隔离，响应里绝不能出现 `tempPath`。
 - 鉴权：`Authorization: Bearer <token>` 或 `?token=`（后者专给 `<img>`/`<a>` 下载用，它们带不了请求头）。配对码接口仅回环地址可调。
 - 数据根：Linux `~/.local/share/lan-drop`，Windows `%LOCALAPPDATA%\LAN-Drop`；env 覆盖项（`LAN_DROP_PORT` 等）见 `src/config.ts`。
+- 展示名 `config.serverName` 默认取 `os.hostname()`，可用 `LAN_DROP_SERVER_NAME` 覆盖。**不要再改回写死的「LAN-Drop 服务端」**：这个名字显示在手机聊天页标题与 Web 控制台标题上，那个位置唯一的职责是回答「我在跟哪台机器说话」，而「服务端」既是实现术语、多台 PC 时又全都同名。改完记得重启服务端（名字在 boot 时确定）。
 
 ## Web（apps/web）
 
@@ -57,8 +58,23 @@ cd android && ./gradlew :app:assembleDebug
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 15 项协议一致性单测（JVM，无需设备与服务端）。改协议时同步更新 `app/src/test/.../ProtocolJsonTest.kt` 里的真实响应样本。
+- `./gradlew :app:testDebugUnitTest` 是 32 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 15 项协议一致性（改协议时同步更新里面的真实响应样本），`notify/TransferNoticeTest` 17 项通知逻辑。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
+
+### 前台服务与通知（P3-2）
+
+- `notify/TransferService` 的生命周期**跟着「有没有传输在跑」**：`TransferRepository` 在开工/恢复时经 `TransferServiceLauncher` 拉起，服务自己订阅 Room，全部离开 `queued/running` 后 1.5 s `stopSelf()`。新增传输方向时照样要拉服务，否则锁屏后进程会被冻结。
+- **服务只订阅 Room，不接收推送的进度**：服务与界面共用同一个 `AppContainer`，进度只有一个真相。别引入「服务眼中的传输状态」这第二份副本。
+- `startForeground` 由 `ServiceCompat.startForeground(..., FOREGROUND_SERVICE_TYPE_DATA_SYNC)` 调用，manifest 里的 `foregroundServiceType="dataSync"` 不能删（Android 14+ 缺了会抛 `InvalidForegroundServiceTypeException`）。必须在 `onStartCommand` 里立刻调（5 秒限制），此刻还没读到进度，先挂 `Notifications.preparing` 占位。
+- 通知必须 `setForegroundServiceBehavior(FOREGROUND_SERVICE_IMMEDIATE)`：Android 12+ 默认会把新前台服务的通知推迟约 10 秒才显示。
+- **Android 15 起 `dataSync` 前台服务有 6 小时/24 小时配额**，用尽时系统调 `onTimeout(startId, fgsType)`。`TransferService` 已在该回调里 `pauseAll()` + 发提醒 + 停止自己；**不要把这个回调删掉**，否则用户视角是「传到一半通知没了，也没有任何解释」。
+- 后台启动前台服务受 Android 12+ 限制（`ForegroundServiceStartNotAllowedException`，属 `IllegalStateException`）。拉起处一律 try/catch：通知挂不上只是少个提示，不能让用户的发送失败。
+- 三条通知渠道（`transfer_progress` 低 / `transfer_result` 中 / `message` 中）**一旦建立重要性就只有用户能改**，不要合并。
+- **「用户主动暂停」与「网络中断暂停」靠 `error` 是否为空区分**：主动暂停走 `setStateIfExists(..., PAUSED, null)`，中断路径会写原因。`TransferNotice.result()` 依赖这个约定决定提不提醒。若将来给主动暂停也填 `error`，通知会开始乱响。
+- 通知按钮的 `PendingIntent` 相等性**不含 extra**，只按 requestCode + Intent 过滤等价部分比较；传输 ID 必须掺进 requestCode（见 `Notifications.serviceAction`），否则两条传输的按钮会互相覆盖。
+- `AppVisibility.foreground` 由 `MainActivity` 的 onStart/onStop 维护（单 Activity 应用刻意不引 `ProcessLifecycleOwner`），只用于「该不该发新消息通知」。
+- 进行中的进度通知会持续刷新 → SystemUI 进不了 idle → **`uiautomator dump` 报 `could not get idle state` 并失败**，必须重试（实测要 20 次）。且 dump 失败时**不会写文件**：脚本若失败后照旧 `cat` 远端路径，读到的是上一次的旧 dump，会得出完全错误的界面结论（`/tmp/uidump.sh` 的做法是先删远端文件、失败即退出）。
+- 前台服务 `android:exported="false"`，所以 `adb shell am startservice` 起不动它（`Requires permission not exported from uid`）——通知按钮只能靠真实点击验证；且「暂停」「取消」两键同排相邻（实测 x=178 与 x=311），**绝不能盲点或按估算坐标点**，点错就是删掉几百 MB 半成品。
 
 ## 约定
 

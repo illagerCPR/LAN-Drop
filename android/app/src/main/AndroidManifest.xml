@@ -33,6 +33,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          传输期间的前台服务。dataSync 型：Android 14+ 要求服务在 manifest 里声明类型，
+          否则 startForeground 会抛 InvalidForegroundServiceTypeException。
+          不要加 android:stopWithTask="true"——从最近任务划掉应用不该掐断正在传的文件。
+        -->
+        <service
+            android:name=".notify.TransferService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

@@ -44,6 +44,16 @@ data class PickedFile(
 )
 
 /**
+ * 前台服务的拉起入口。
+ *
+ * 抽成接口是为了让仓储层只说「有活了」，不依赖 Android 的 Service 生命周期：
+ * 服务起来之后自己去订阅 Room 拿进度，仓储不需要向它推送任何东西。
+ */
+fun interface TransferServiceLauncher {
+    fun ensureRunning()
+}
+
+/**
  * 文件传输：上传（手机 → PC）与下载（PC → 手机），支持暂停与断点续传。
  *
  * ## 断点续传的两半
@@ -71,6 +81,7 @@ class TransferRepository(
     private val db: LanDropDatabase,
     private val api: LanDropApi,
     private val scope: CoroutineScope,
+    private val foreground: TransferServiceLauncher,
 ) {
     private val appContext = context.applicationContext
     private val resolver: ContentResolver = appContext.contentResolver
@@ -124,6 +135,10 @@ class TransferRepository(
         // 上一轮还在「取消」收尾时不要抢跑（现场正在被清掉）；
         // 暂停收尾则可以排队等它，否则用户连点「继续」会静默没反应。
         if (previous != null && intents[transferId] != CancelIntent.PAUSE) return
+
+        // 恢复同样要把前台服务叫起来，否则「锁屏中点继续」会在几秒后被系统冻住。
+        // 放在 launch 之前：先有保护再开工，别指望那几毫秒里系统不会冻结进程。
+        foreground.ensureRunning()
 
         val job = scope.launch {
             previous?.join()
@@ -613,6 +628,20 @@ class TransferRepository(
         job.cancel()
     }
 
+    /**
+     * 暂停所有进行中的传输。
+     *
+     * 目前只有一个调用方：[io.github.illagercpr.landrop.notify.TransferService] 的
+     * `onTimeout`——Android 15 起 dataSync 型前台服务有 6 小时/24 小时的配额，
+     * 用尽时系统只给我们一次收尾机会，落到「已暂停」才能保住两端的进度。
+     */
+    fun pauseAll() {
+        scope.launch {
+            dao.loadByStates(listOf(TransferState.QUEUED, TransferState.RUNNING))
+                .forEach { pause(it.id) }
+        }
+    }
+
     /** 协程被取消后统一收尾：读意图区分暂停与取消，读完即消费掉。 */
     private suspend fun settleCancellation(transferId: String) {
         when (intents.remove(transferId)) {
@@ -742,6 +771,11 @@ class TransferRepository(
 
     private fun startJob(transferId: String, block: suspend (String) -> Unit) {
         if (jobs.containsKey(transferId)) return
+
+        // 先叫前台服务再起协程：文件传几分钟，用户几乎必然会锁屏或切走，
+        // 没有前台服务进程会被冻结，传输就停在半路。
+        foreground.ensureRunning()
+
         val job = scope.launch { block(transferId) }
         jobs[transferId] = job
         job.invokeOnCompletion { if (jobs[transferId] === job) jobs.remove(transferId) }

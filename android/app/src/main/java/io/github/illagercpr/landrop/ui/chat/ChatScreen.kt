@@ -1,5 +1,7 @@
 package io.github.illagercpr.landrop.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -39,8 +41,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -73,10 +77,28 @@ fun ChatScreen(
     val onlineCount by viewModel.onlineCount.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
+
     var showTransfers by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+
+    // 通知权限只在「真的要传东西」时申请：此刻它才有具体含义（你会离开这个页面，
+    // 传完了通知你），比一进应用就弹一个没有上下文的系统弹窗更容易被允许。
+    // minSdk 33，POST_NOTIFICATIONS 必然存在，不需要版本判断。
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+
+    fun ensureNotificationPermission() {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!granted) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     // 新消息到达且用户本来就在底部附近时自动贴底；用户翻历史时不打扰
     LaunchedEffect(timeline.firstOrNull()?.seq, outbox.size) {
@@ -151,7 +173,10 @@ fun ChatScreen(
                     draft = viewModel.draft,
                     onDraftChange = viewModel::onDraftChange,
                     onSend = viewModel::send,
-                    onPickFile = viewModel::sendFile,
+                    onPickFile = { uri, mime ->
+                        ensureNotificationPermission()
+                        viewModel.sendFile(uri, mime)
+                    },
                 )
             }
         },
@@ -171,6 +196,10 @@ fun ChatScreen(
                     listState = listState,
                     downloads = downloads,
                     viewModel = viewModel,
+                    onDownload = { message ->
+                        ensureNotificationPermission()
+                        viewModel.download(message)
+                    },
                 )
             }
         }
@@ -184,6 +213,7 @@ private fun Timeline(
     listState: LazyListState,
     downloads: Map<String, DownloadState>,
     viewModel: ChatViewModel,
+    onDownload: (MessageEntity) -> Unit,
 ) {
     if (timeline.isEmpty() && outbox.isEmpty()) {
         EmptyTimeline(modifier = Modifier.fillMaxSize())
@@ -209,7 +239,7 @@ private fun Timeline(
             MessageRow(
                 message = message,
                 downloadState = downloads[message.id],
-                onDownload = viewModel::download,
+                onDownload = onDownload,
             )
         }
     }

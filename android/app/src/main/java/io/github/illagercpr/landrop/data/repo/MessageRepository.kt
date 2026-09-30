@@ -1,6 +1,7 @@
 package io.github.illagercpr.landrop.data.repo
 
 import io.github.illagercpr.landrop.data.local.LanDropDatabase
+import io.github.illagercpr.landrop.data.local.MessageDirection
 import io.github.illagercpr.landrop.data.local.MessageEntity
 import io.github.illagercpr.landrop.data.local.toEntity
 import io.github.illagercpr.landrop.data.prefs.ConnectionStore
@@ -29,6 +30,17 @@ sealed interface SyncState {
 }
 
 /**
+ * 收到对端消息时的提醒入口。
+ *
+ * 抽成接口是为了让仓储层只管「消息到了」，不掺和「要不要响、怎么响」——
+ * 应用在前台时不提醒这条策略属于展示层，放在这里会让数据层多一个
+ * 它无法验证的判断（前台与否）。
+ */
+fun interface NewMessageNotifier {
+    fun onMessage(message: MessageEntity)
+}
+
+/**
  * 会话消息的权威副本在服务端，本类负责：
  *  1. 首次全量 / 断线后增量地把消息同步进 Room（游标是本地最大 `seq`）；
  *  2. 把 WebSocket 推来的实时消息落库，实现「PC 发一条，手机立刻出现」；
@@ -43,6 +55,7 @@ class MessageRepository(
     private val api: LanDropApi,
     private val socket: LanDropSocket,
     private val scope: CoroutineScope,
+    private val notifier: NewMessageNotifier,
 ) {
     private val dao = db.messageDao()
     private val syncMutex = Mutex()
@@ -141,7 +154,12 @@ class MessageRepository(
             }
 
             is WsEvent.MessageNew -> {
-                dao.upsert(event.message.toEntity(connection.deviceId))
+                val entity = event.message.toEntity(connection.deviceId)
+                dao.upsert(entity)
+                // 只提醒对端发来的：服务端会把消息广播给所有客户端，包括发送者自己
+                if (entity.direction == MessageDirection.INBOUND) {
+                    notifier.onMessage(entity)
+                }
             }
 
             is WsEvent.MessagesCleared -> dao.clear()
