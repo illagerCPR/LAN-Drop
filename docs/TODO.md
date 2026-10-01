@@ -104,14 +104,34 @@
   版本统一 0.2.0；Android release 签名（keystore gitignored，RSA 3072/30 年，
   证书指纹 `eb483500…`）+ R8（42.9 MB → 4.2 MB，apksigner V2 验证）。
 
+## 发布轮 v0.2.1（2026-10-01 完成，仅桌面壳）
+
+> 用户在 WSLg 里跑 AppImage 报「进程一直在，但手机连不上 / 控制台打不开」，终端只有一行
+> `Gtk-CRITICAL: gtk_widget_get_scale_factor …`。根因两条都与服务端无关：无托盘宿主时
+> libayatana-appindicator 的 GtkStatusIcon fallback 打断言失败（图标照样不显示），而托盘常驻
+> 形态没有托盘就等于没有 UI。版本形态经用户确认：**另发 v0.2.1，v0.2.0 的 tag 与资产不动**。
+
+- [x] **无托盘宿主不建托盘**：GIO 查 `org.kde.StatusNotifierWatcher`（gio/glib 0.18 已在依赖树里），
+  没有就整条跳过——从源头消掉那行 CRITICAL 与 libayatana 弃用警告。
+- [x] **启动即打开控制台**（无托盘时浏览器是唯一入口）：WSL 交给 Windows 侧浏览器
+  （`cmd.exe /c start`），其余 Linux 走 xdg-open；终端打印控制台地址横幅。
+- [x] **等回环端口就绪再打开**：sidecar 要 ~0.6 秒才 bind，抢先打开只会得到「无法访问此页面」
+  （实测服务端日志里连一条请求都没有）。
+- [x] **日志过滤器只滤两条固定文案**（那行 Gtk CRITICAL + libayatana 弃用警告），其余照旧输出；
+  托盘图标缺失不再让 setup 失败。
+- [x] **sidecar bundle 的版本号改从 package.json 读**（banner 曾长期写死 0.1.0）。
+- [x] 版本统一 0.2.1（package.json ×5 / tauri.conf / Cargo.toml / Android versionCode 3）+
+  CHANGELOG 0.2.1 + README/计划文档同步；三端产物重建、tag `v0.2.1` + GitHub Release。
+
 ## 可选增强（规划内，未排期）
 
 - [ ] **后台「常驻接收」开关**（用户可开关的常驻模式）：当前刻意不做——无传输时进程会被
   系统冻结，做的话要连同冻结后的重连语义一起设计（理由见计划文档 P3-2 坑 1）。
 - [ ] **macOS 桌面壳构建**：待有 macOS 机器/需求时再补。
-- [ ] **第 2 轮发布动作**（等用户确认）：真机验收（TLS 重配对 + 多服务端切换 +
-  release APK 实装）→ 三端构建（NSIS / AppImage / 签名 APK）→ tag `v0.2.0`（GPG）
-  → GitHub Release（附 CHANGELOG）。
+- [x] **第 2 轮发布动作**（2026-10-01 完成）：真机验收（TLS 重配对 + 多服务端切换 +
+  release APK 实装，验收中发现并修复「配对成功后覆盖层不关闭」）→ 三端构建
+  （NSIS / AppImage / 签名 APK）→ tag `v0.2.0`（GPG）→ GitHub Release（三件产物 + SHA256SUMS.txt）→
+  CI 绿。
 
 ## 刻意不做（记录在案，勿当遗漏）
 
