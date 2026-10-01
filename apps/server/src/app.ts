@@ -73,9 +73,20 @@ function redactQueryToken(url: string | undefined): string | undefined {
   return url?.replace(TOKEN_IN_QUERY_RE, "$1[REDACTED]");
 }
 
-export function createApp(ctx: AppContext): FastifyInstance {
+export interface CreateAppOptions {
+  /**
+   * 提供时本实例为 https（LAN 监听器）；缺省为明文（回环监听器或 TLS 关闭）。
+   * 同一个 ctx 会构建两个实例共享 store/hub/pairing，区别只在监听器与证书。
+   */
+  https?: { key: string; cert: string };
+}
+
+export function createApp(ctx: AppContext, options: CreateAppOptions = {}): FastifyInstance {
   const { config } = ctx;
 
+  // https 选项会让 Fastify 的泛型推断把实例类型挪到 Http2SecureServer 变体上
+  // （对 registerXxx(app) 的默认实例类型不再兼容），这里显式钉回默认实例类型；
+  // 运行时行为不受影响：传了 https 就是真的 TLS 监听器。
   const app = Fastify({
     logger: {
       level: process.env["LAN_DROP_LOG_LEVEL"] ?? "info",
@@ -94,7 +105,8 @@ export function createApp(ctx: AppContext): FastifyInstance {
       },
     },
     trustProxy: false,
-  });
+    ...(options.https ? { https: options.https } : {}),
+  }) as FastifyInstance;
 
   // ---- 全局：拒绝非私有网段来源 ----
   if (config.privateNetworkOnly) {
@@ -124,7 +136,9 @@ export function createApp(ctx: AppContext): FastifyInstance {
     protocolVersion: PROTOCOL_VERSION,
     serverId: ctx.serverId,
     serverName: config.serverName,
-    tls: false,
+    tls: ctx.tlsFingerprint !== null,
+    // 指纹是客户端固定校验的种子：/info、配对响应、二维码三处必须同一份
+    ...(ctx.tlsFingerprint !== null ? { tlsFingerprint: ctx.tlsFingerprint } : {}),
     pairingRequired: config.pairingRequired,
   }));
 

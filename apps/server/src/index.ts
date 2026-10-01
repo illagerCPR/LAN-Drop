@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import type { FastifyInstance } from "fastify";
 import { WsEventType } from "@lan-drop/protocol";
 
 import { createApp } from "./app.ts";
@@ -11,10 +12,17 @@ import { Hub } from "./hub.ts";
 import { loadOrCreateIdentity } from "./identity.ts";
 import { lanAddresses } from "./net.ts";
 import { removeFileQuietly } from "./storage.ts";
+import { loadOrCreateTlsMaterial, type TlsLogger } from "./tls.ts";
 import { Store } from "./store.ts";
 
 /** 超时未完成的上传，其 .part 临时文件在超过该时长后被回收。 */
 const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
+
+/** Fastify 起来之前的引导日志：此刻还没有 app 实例可借用。 */
+const bootstrapLog: TlsLogger = {
+  info: (obj, msg) => console.log(`[lan-drop] ${msg ?? ""} ${JSON.stringify(obj)}`),
+  warn: (obj, msg) => console.warn(`[lan-drop] ${msg ?? ""} ${JSON.stringify(obj)}`),
+};
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -24,25 +32,46 @@ async function main(): Promise<void> {
   const hub = new Hub();
   const pairing = new PairingManager();
 
+  // TLS 材料（默认开启）：生成/载入失败就让启动失败，把「要不要明文」留给
+  // 显式的 LAN_DROP_TLS=0，绝不静默退回——静默降级正是安全功能最坏的失败方式。
+  let tlsFingerprint: string | null = null;
+  let httpsOptions: { key: string; cert: string } | undefined;
+  if (config.tlsEnabled) {
+    const material = await loadOrCreateTlsMaterial(config.dataRoot, bootstrapLog);
+    tlsFingerprint = material.fingerprintUrlSafe;
+    httpsOptions = { key: material.keyPem, cert: material.certPem };
+  }
+
   const ctx: AppContext = {
     config,
     store,
     hub,
     pairing,
     serverId: identity.serverId,
+    tlsFingerprint,
   };
 
-  const app = createApp(ctx);
+  const app = createApp(ctx, httpsOptions ? { https: httpsOptions } : {});
   await app.listen({ host: config.host, port: config.port });
 
+  // 回环明文监听器（仅 TLS 开启时有）：LAN 端口是自签证书，本机浏览器访问要吃
+  // 证书警告；控制台与配对码接口走 127.0.0.1 明文端口，宿主机体验不受影响，
+  // 局域网侧流量照常全程加密。
+  let loopbackApp: FastifyInstance | null = null;
+  if (httpsOptions) {
+    loopbackApp = createApp(ctx);
+    await loopbackApp.listen({ host: "127.0.0.1", port: config.loopbackPort });
+  }
+
   // UDP 自动发现：绑定失败只降级（日志说明），不影响 HTTP 服务
-  const discovery = new DiscoveryService(config, identity.serverId);
+  const discovery = new DiscoveryService(config, identity.serverId, tlsFingerprint !== null);
   discovery.start(app.log);
 
   const addresses = lanAddresses();
   const { code, expiresAt } = pairing.current();
   const minutes = Math.max(1, Math.round((expiresAt - Date.now()) / 60000));
 
+  const lanScheme = tlsFingerprint !== null ? "https" : "http";
   const lines: string[] = [
     "",
     "  ┌────────────────────────────────────────────────┐",
@@ -53,11 +82,20 @@ async function main(): Promise<void> {
     `  文件仓库   ${config.filesRoot}`,
     `  服务端 ID  ${identity.serverId.slice(0, 8)}…`,
     "",
-    `  本机访问   http://localhost:${config.port}   （本机免配对，直接可用）`,
   ];
 
+  if (tlsFingerprint !== null) {
+    lines.push(
+      `  本机访问   http://localhost:${config.loopbackPort}   （回环明文，控制台/配对码免证书警告）`,
+      `  TLS        已启用，SPKI 指纹 ${tlsFingerprint}`,
+      `             （随配对二维码下发，客户端固定校验；证书轮换 = 全部设备重新配对）`,
+    );
+  } else {
+    lines.push(`  本机访问   http://localhost:${config.port}   （本机免配对，直接可用）`);
+  }
+
   for (const ip of addresses) {
-    lines.push(`  手机访问   http://${ip}:${config.port}`);
+    lines.push(`  手机访问   ${lanScheme}://${ip}:${config.port}`);
   }
 
   if (config.discoveryEnabled) {
@@ -144,6 +182,8 @@ async function main(): Promise<void> {
     try {
       discovery.stop();
       await app.close();
+      // 两个实例的 onClose 都会关 store（幂等），关两次无害
+      await loopbackApp?.close();
     } finally {
       process.exit(0);
     }

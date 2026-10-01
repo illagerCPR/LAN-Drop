@@ -74,13 +74,21 @@ export function registerPairRoutes(app: FastifyInstance, ctx: AppContext): void 
 
     const { code, expiresAt } = ctx.pairing.current();
     const port = ctx.config.port;
+    const tlsOn = ctx.tlsFingerprint !== null;
+
+    // TLS 开启时二维码直接携带 SPKI 指纹（`#pair=CODE&fp=...`）：相机是攻击者
+    // 插不进的视觉信道，指纹随码走，客户端「配对即固定」，无需 CA 也无需用户核对。
+    const scheme = tlsOn ? "https" : "http";
+    const fpParam = tlsOn ? `&fp=${ctx.tlsFingerprint}` : "";
 
     return {
       code,
       expiresAt,
       port,
+      tls: tlsOn,
+      fingerprint: ctx.tlsFingerprint,
       // 二维码内容直接用带 hash 的 URL，手机扫码后打开页面即可自动带出配对码
-      urls: lanAddresses().map((ip) => `http://${ip}:${port}/#pair=${code}`),
+      urls: lanAddresses().map((ip) => `${scheme}://${ip}:${port}/#pair=${code}${fpParam}`),
     };
   });
 
@@ -114,6 +122,7 @@ export function registerPairRoutes(app: FastifyInstance, ctx: AppContext): void 
       deviceToken: token,
       serverId: ctx.serverId,
       serverName: ctx.config.serverName,
+      ...(ctx.tlsFingerprint !== null ? { tlsFingerprint: ctx.tlsFingerprint } : {}),
     };
 
     app.log.info({ device: device.name, platform }, "设备配对成功");
@@ -137,6 +146,7 @@ export function registerPairRoutes(app: FastifyInstance, ctx: AppContext): void 
       deviceToken: token,
       serverId: ctx.serverId,
       serverName: ctx.config.serverName,
+      ...(ctx.tlsFingerprint !== null ? { tlsFingerprint: ctx.tlsFingerprint } : {}),
     };
 
     return response;

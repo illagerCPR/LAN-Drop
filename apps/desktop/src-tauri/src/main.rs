@@ -25,6 +25,9 @@ use tauri_plugin_shell::ShellExt;
 /// 服务端默认端口（与服务端 config.ts 一致；可用 LAN_DROP_PORT 覆盖）。
 const DEFAULT_PORT: u16 = 8787;
 
+/// TLS 开启时回环明文监听器的默认端口（与服务端 config.ts 一致）。
+const DEFAULT_LOOPBACK_PORT: u16 = 8789;
+
 /// sidecar 的生命周期与「是不是壳主动杀的」标记：主动退出时先杀进程，
 /// sidecar 的 Terminated 事件随之而来，不能再触发一次 exit(1)（会掩盖正常退出码）。
 struct ServerHandle {
@@ -33,10 +36,27 @@ struct ServerHandle {
 }
 
 fn console_url() -> String {
-    let port = std::env::var("LAN_DROP_PORT")
-        .ok()
-        .and_then(|value| value.trim().parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
+    // TLS 语义必须与服务端 config.ts 的 parseBoolOr 完全一致：
+    // 未设置 = 开启（服务端默认），设置后只有 "1"/"true" 算开启。
+    // TLS 开启时 LAN 端口是自签证书，浏览器会弹警告；控制台走回环明文端口。
+    let tls_enabled = match std::env::var("LAN_DROP_TLS") {
+        Ok(value) => {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true")
+        }
+        Err(_) => true,
+    };
+    let port = if tls_enabled {
+        std::env::var("LAN_DROP_LOOPBACK_PORT")
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .unwrap_or(DEFAULT_LOOPBACK_PORT)
+    } else {
+        std::env::var("LAN_DROP_PORT")
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT)
+    };
     format!("http://127.0.0.1:{port}/")
 }
 

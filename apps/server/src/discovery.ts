@@ -14,6 +14,8 @@ export interface DiscoveryAnnounce {
   id: string;
   name: string;
   port: number;
+  /** LAN 监听器是否 TLS；老服务端没有此字段，客户端按 false 处理 */
+  tls: boolean;
 }
 
 /** 发现服务的最小日志接口（传入 Fastify 的 logger，避免依赖其完整类型）。 */
@@ -42,10 +44,13 @@ export class DiscoveryService {
 
   private readonly serverId: string;
 
-  constructor(config: ServerConfig, serverId: string) {
+  constructor(config: ServerConfig, serverId: string, tls: boolean = false) {
     this.config = config;
     this.serverId = serverId;
+    this.tls = tls;
   }
+
+  private readonly tls: boolean;
 
   start(log: DiscoveryLogger): void {
     if (!this.config.discoveryEnabled) {
@@ -72,6 +77,7 @@ export class DiscoveryService {
         id: this.serverId,
         name: this.config.serverName,
         port: this.config.port,
+        tls: this.tls,
       };
       socket.send(JSON.stringify(announce), rinfo.port, rinfo.address);
     });

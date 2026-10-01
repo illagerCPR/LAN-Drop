@@ -40,6 +40,7 @@ const MESSAGE_SELECT = `
 export class Store {
   readonly #db: DatabaseSync;
   readonly #stmts = new Map<string, StatementSync>();
+  #closed = false;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -565,6 +566,9 @@ export class Store {
   }
 
   close(): void {
+    // 幂等：TLS 双监听器共享同一个 ctx，两个 Fastify 实例的 onClose 都会调到这里
+    if (this.#closed) return;
+    this.#closed = true;
     this.#stmts.clear();
     this.#db.close();
   }

@@ -11,4 +11,9 @@ export interface AppContext {
   pairing: PairingManager;
   /** 服务端身份（首次启动生成后持久化），客户端用它识别「还是不是原来那台」 */
   serverId: string;
+  /**
+   * TLS 开启时的证书指纹（SPKI sha256，base64url 无填充）；明文模式为 null。
+   * 每个监听器实例都带同一份：/info、配对响应与二维码都要把指纹交给客户端。
+   */
+  tlsFingerprint: string | null;
 }

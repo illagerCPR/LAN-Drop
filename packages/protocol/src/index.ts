@@ -94,8 +94,13 @@ export interface ServerInfoDto {
   protocolVersion: number;
   serverId: string;
   serverName: string;
-  /** 是否启用 TLS（首版恒为 false，P4 可选） */
+  /** LAN 监听器是否为 TLS（自签证书 + 客户端 SPKI 指纹固定） */
   tls: boolean;
+  /**
+   * SPKI 指纹（证书公钥的 sha256，base64url 无填充）。仅 `tls: true` 时存在；
+   * 客户端把它与配对二维码里的指纹核对，一致才固化到本地并固定校验。
+   */
+  tlsFingerprint?: string;
   pairingRequired: boolean;
 }
 
@@ -280,4 +285,6 @@ export interface PairResponse {
   deviceToken: string;
   serverId: string;
   serverName: string;
+  /** TLS 开启时的 SPKI 指纹（与 /info、二维码一致），客户端固化后用于固定校验 */
+  tlsFingerprint?: string;
 }
