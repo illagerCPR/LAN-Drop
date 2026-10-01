@@ -76,7 +76,7 @@
   边算、续传会话重读前缀补摘要（选项 B）；Web 刻意不声明（不对称已记录在案）。
 - [x] **设备撤销**：DELETE /pair/devices/:id（仅回环）+ 回收上传会话 + 踢下线 4401；
   Web 控制台新增「设备管理」面板。
-- [x] **CI**：GitHub Actions 三 job（ts 全链路门禁 / android JVM 单测 continue-on-error /
+- [x] **CI**：GitHub Actions 三 job（ts 全链路门禁 / android JVM 单测硬门禁，109 项 CI 全过 /
   hygiene：ps1 BOM + 文档链接检查）。
 - [x] **`pnpm verify` 一键门禁**：typecheck + 单测 + 自起 8899 服务端全量冒烟
   （93 项）+ 日志 token 泄漏扫描。

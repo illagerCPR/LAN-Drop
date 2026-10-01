@@ -2,8 +2,7 @@ name: CI
 
 # 三个 job，边界刻意分清：
 #   ts      —— TS 侧全链路门禁：类型 + 单测 + 自起服务端的端到端冒烟（pnpm verify）
-#   android —— Android JVM 单测（无需设备与服务端）；首期 continue-on-error，
-#              稳定后移除该开关收紧为门禁
+#   android —— Android JVM 单测（无需设备与服务端），正式门禁
 #   hygiene —— 仓库卫生：ps1 文件 BOM（PS 5.1 无 BOM 按 ANSI 解码会炸中文语法）、
 #              文档相对链接有效性
 #
@@ -37,7 +36,6 @@ jobs:
   android:
     name: Android JVM 单测
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
