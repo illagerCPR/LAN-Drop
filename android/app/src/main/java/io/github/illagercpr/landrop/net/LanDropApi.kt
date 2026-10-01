@@ -155,12 +155,15 @@ class LanDropApi(
     /**
      * 下载文件的请求（不发送，交给调用方流式消费）。
      *
-     * [rangeFrom] 非空时带 `Range: bytes=from-`，用于断点续传；
-     * 鉴权走 `?token=`——下载可能被交给外部组件（如系统下载器），带不了自定义头。
+     * [rangeFrom] 非空时带 `Range: bytes=from-`，用于断点续传。
+     * 凭据走 Authorization 头——这里的下载都经 OkHttp 消费（正文流式落盘、
+     * 缩略图取流），带得了请求头，就不该把 token 写进 URL（会进服务端日志）。
+     * `?token=` 查询参数只留给浏览器的 `<img>`/`<a>` 与浏览器 WebSocket。
      */
     fun downloadRequest(connection: Connection, fileId: String, rangeFrom: Long?): Request {
         val builder = Request.Builder()
-            .url("${connection.baseUrl}${ApiPath.FILES}/$fileId?token=${connection.deviceToken}")
+            .url("${connection.baseUrl}${ApiPath.FILES}/$fileId")
+            .header("Authorization", "Bearer ${connection.deviceToken}")
             .get()
         if (rangeFrom != null && rangeFrom > 0) {
             builder.header("Range", "bytes=$rangeFrom-")

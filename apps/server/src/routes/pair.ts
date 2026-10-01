@@ -14,13 +14,26 @@ import { isLoopback, lanAddresses } from "../net.ts";
 /** 设备名长度上限，避免被塞入超长字符串。 */
 const MAX_DEVICE_NAME = 64;
 
+export interface AuthHookOptions {
+  /**
+   * 允许用 `?token=` 携带凭据。
+   *
+   * 查询参数会留在服务端日志、浏览器历史与各中间层，属于高泄漏面凭据；
+   * 只有「带不了请求头的消费者」（`<img src>` / `<a download>`）才配得上这个口子，
+   * 因此默认关闭，仅文件下载路由显式打开（WS 在 app.ts 里单独处理，同样是浏览器约束）。
+   */
+  allowQueryToken?: boolean;
+}
+
 /**
  * 统一的鉴权前置钩子。
  *
  * 钩子内直接 `reply.send()` 后 Fastify 会跳过后续 handler，
  * 因此调用方不必在业务代码里再判一次「有没有登录」。
  */
-export function createAuthHook(ctx: AppContext) {
+export function createAuthHook(ctx: AppContext, options: AuthHookOptions = {}) {
+  const allowQueryToken = options.allowQueryToken === true;
+
   return async function authHook(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -28,7 +41,7 @@ export function createAuthHook(ctx: AppContext) {
     const device = resolveDevice(
       ctx.store,
       request.headers.authorization,
-      extractQueryToken(request.query),
+      allowQueryToken ? extractQueryToken(request.query) : undefined,
     );
 
     if (!device) {

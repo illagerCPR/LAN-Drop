@@ -3,7 +3,6 @@ package io.github.illagercpr.landrop.net
 import io.github.illagercpr.landrop.protocol.ApiPath
 import io.github.illagercpr.landrop.protocol.MessageDto
 import io.github.illagercpr.landrop.protocol.WsHelloPayloadDto
-import java.net.URLEncoder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -125,14 +124,15 @@ class LanDropSocket(
         val (baseUrl, token) = target ?: return
         _state.value = if (attempt == 0) SocketState.CONNECTING else SocketState.RECONNECTING
 
-        val url = buildString {
-            append(baseUrl.toWebSocketBase())
-            append(ApiPath.WS)
-            append("?token=")
-            append(URLEncoder.encode(token, "UTF-8"))
-        }
+        // 凭据走 Authorization 头而不是 ?token=：URL 会原样进服务端访问日志与各中间层。
+        // OkHttp 的 WebSocket 握手完全可以带自定义请求头，只有浏览器才被迫用查询参数
+        // （服务端对 WS 保留查询参数通道正是为了浏览器）。
+        val request = Request.Builder()
+            .url(baseUrl.toWebSocketBase() + ApiPath.WS)
+            .header("Authorization", "Bearer $token")
+            .build()
 
-        socket = client.newWebSocket(Request.Builder().url(url).build(), listener)
+        socket = client.newWebSocket(request, listener)
     }
 
     private val listener = object : WebSocketListener() {

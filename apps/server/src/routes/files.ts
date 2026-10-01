@@ -43,6 +43,8 @@ const MAX_UPLOAD_LIST = 100;
 
 export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void {
   const authHook = createAuthHook(ctx);
+  // 下载是唯一允许 ?token= 的 HTTP 接口：<img src> / <a download> 带不了请求头
+  const downloadAuthHook = createAuthHook(ctx, { allowQueryToken: true });
 
   // ---------------------------------------------------------------- 创建上传会话
   app.post<{ Body: { name?: string; size?: number; mime?: string; sha256?: string } }>(
@@ -308,7 +310,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
   // ---------------------------------------------------------------- 下载（支持 Range）
   app.get<{ Params: { id: string }; Querystring: { token?: string; download?: string } }>(
     `${ApiPath.files}/:id`,
-    { preHandler: authHook },
+    { preHandler: downloadAuthHook },
     async (request, reply) => {
       const file = ctx.store.findFile(request.params.id);
       if (!file) {

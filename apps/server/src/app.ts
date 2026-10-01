@@ -60,11 +60,39 @@ const WS_READY_OPEN = 1;
 /** 自定义关闭码：鉴权失败（4000-4999 为应用保留区间）。 */
 const WS_CLOSE_UNAUTHORIZED = 4401;
 
+/** 匹配 URL 查询串里的 `token=<值>`（下载与 WS 是仅有的合法携带方）。 */
+const TOKEN_IN_QUERY_RE = /([?&]token=)[^&]*/g;
+
+/**
+ * 访问日志里的 `req.url` 会整段包含 `?token=<凭据原文>`——下载与 WS 走查询参数
+ * 携带凭据是浏览器的硬约束，但日志落盘即泄漏（实测确认过：Fastify 默认访问
+ * 日志把带 token 的 url 原样写进 stdout）。序列化器在写日志前把值打码；
+ * 保留参数名是为了排查时还能看出「这个请求带了查询凭据」。
+ */
+function redactQueryToken(url: string | undefined): string | undefined {
+  return url?.replace(TOKEN_IN_QUERY_RE, "$1[REDACTED]");
+}
+
 export function createApp(ctx: AppContext): FastifyInstance {
   const { config } = ctx;
 
   const app = Fastify({
-    logger: { level: process.env["LAN_DROP_LOG_LEVEL"] ?? "info" },
+    logger: {
+      level: process.env["LAN_DROP_LOG_LEVEL"] ?? "info",
+      serializers: {
+        req: (request) => {
+          const raw = request.raw;
+          return {
+            method: raw.method ?? "",
+            url: redactQueryToken(raw.url) ?? "",
+            version: raw.httpVersion,
+            hostname: raw.headers.host?.split(":")[0] ?? "",
+            remoteAddress: raw.socket.remoteAddress ?? "",
+            remotePort: raw.socket.remotePort ?? 0,
+          };
+        },
+      },
+    },
     trustProxy: false,
   });
 
@@ -118,6 +146,8 @@ export function createApp(ctx: AppContext): FastifyInstance {
   // Fastify 会把它当普通 GET 路由，handler 收到 (request, reply) 而非 (socket, request)
   // ——socket 参数实际是 Request 对象，socket.close() 直接 TypeError，鉴权字段也全部读空。
   app.register(async function websocketRoutes(instance) {
+    // WS 握手刻意保留 ?token= 携带方式：浏览器无法给 WebSocket 设置自定义请求头，
+    // Web 控制台只能走查询参数（访问日志已由上面的序列化器打码）。
     instance.get(ApiPath.ws, { websocket: true }, (socket: WebSocket, request) => {
       const device = resolveDevice(
         ctx.store,

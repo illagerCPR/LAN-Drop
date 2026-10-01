@@ -66,8 +66,8 @@ async function main() {
       env: {
         ...process.env,
         LAN_DROP_PORT: String(PORT),
+        // 发现服务要开着（冒烟有 UDP 一节），但换到 8898 端口，不碰真实 8788
         LAN_DROP_DISCOVERY_PORT: String(DISCOVERY_PORT),
-        LAN_DROP_DISCOVERY: "0",
         LAN_DROP_DATA_ROOT: dataRoot,
         LAN_DROP_SERVER_NAME: "lan-drop-verify",
         LAN_DROP_LOG_LEVEL: "info",
