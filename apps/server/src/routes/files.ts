@@ -21,6 +21,8 @@ import {
   contentDisposition,
   ensureDir,
   fileExists,
+  freeDiskBytes,
+  isDiskFullError,
   moveIntoPlace,
   parseRange,
   relativeStoragePath,
@@ -80,6 +82,19 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
       const tempDir = join(ctx.config.dataRoot, "tmp");
       await ensureDir(tempDir);
 
+      // 磁盘满预检：建会话就拒绝注定写不下的文件，而不是让用户传到一半才失败。
+      // 阈值 = 文件大小 + 预留空间（给系统与数据库留喘息地）。freeDiskBytes 返回
+      // null（statfs 不可用）时检查整体跳过，不因平台差异拒绝合法上传。
+      const freeBytes = await freeDiskBytes(tempDir);
+      const requiredBytes = size + ctx.config.reserveBytes;
+      if (freeBytes !== null && freeBytes < requiredBytes) {
+        app.log.warn(
+          { freeBytes, requiredBytes, size, from: device.name },
+          "拒绝上传会话：磁盘剩余空间不足",
+        );
+        return reply.code(507).send({ error: "disk_full", freeBytes, requiredBytes });
+      }
+
       const upload = ctx.store.createUpload({
         deviceId: device.id,
         name: safeName,
@@ -94,8 +109,18 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
 
       // 0 字节文件没有任何分片请求（分片接口对 remaining<=0 一律 409），
       // 临时文件必须在这里就落盘，complete 才有东西可校验、可搬移。
+      // 空文件几乎不可能 ENOSPC，但 inode 耗尽时会——会话行必须一并回收。
       if (size === 0) {
-        await writeEmptyFile(upload.tempPath);
+        try {
+          await writeEmptyFile(upload.tempPath);
+        } catch (error) {
+          ctx.store.setUploadState(upload.id, "aborted");
+          await removeFileQuietly(upload.tempPath);
+          if (isDiskFullError(error)) {
+            return reply.code(507).send({ error: "disk_full", freeBytes, requiredBytes });
+          }
+          throw error;
+        }
       }
 
       const response: CreateUploadResponse = {
@@ -216,6 +241,17 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
         const receivedBytes = ctx.store.addUploadBytes(upload.id, result.bytesWritten);
 
         return { uploadId: upload.id, receivedBytes, size: upload.size };
+      } catch (error) {
+        if (!isDiskFullError(error)) throw error;
+
+        // 磁盘满：**会话刻意保留**。receivedBytes 只在追加成功后才推进，此刻仍是
+        // 旧值，而本片残字节会在下次追加前被 truncateTo 截掉——用户腾出空间后点
+        // 「继续」就能无损接着传。中止会话反而会把已传的字节全部作废。
+        app.log.warn(
+          { uploadId: upload.id, receivedBytes: upload.receivedBytes },
+          "磁盘空间不足，分片写入中断（会话保留）",
+        );
+        return reply.code(507).send({ error: "disk_full", receivedBytes: upload.receivedBytes });
       } finally {
         activeChunkWrites.delete(upload.id);
       }

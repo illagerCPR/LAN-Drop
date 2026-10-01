@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, stat, truncate, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, statfs, truncate, unlink, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -126,6 +126,27 @@ export async function appendStreamToFile(
   }
 
   return { bytesWritten, overflowed: false };
+}
+
+/**
+ * 查询目录所在文件系统的「非特权用户可用」剩余字节数（`statfs` 的 `bavail × bsize`）。
+ *
+ * 返回 null 表示查询不可用（平台不支持、目录不存在等）——调用方必须把 null
+ * 当作「检查跳过」而不是「空间为零」：磁盘满保护是尽力而为的提前拦截，
+ * 不能因为某个平台缺 statfs 就拒绝一切上传。
+ */
+export async function freeDiskBytes(dir: string): Promise<number | null> {
+  try {
+    const stats = await statfs(dir);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return null;
+  }
+}
+
+/** 判定一个写盘错误是不是磁盘满。ENOSPC 是唯一确定信号，其余按原错误向上抛。 */
+export function isDiskFullError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOSPC";
 }
 
 /** 确保目录存在（递归）。 */

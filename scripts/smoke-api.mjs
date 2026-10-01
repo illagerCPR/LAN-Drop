@@ -713,6 +713,37 @@ async function main() {
     `status=${queryOnDownload.status}`,
   );
 
+  // ---------------------------------------------------------------- 8b. 磁盘满预检（尽力而为）
+  //
+  // 建会话即检查「剩余空间 ≥ 文件大小 + 预留」，把「注定写不下」拦在第一个请求。
+  // 探测声明一个 1 GiB 文件：剩余不足时必须 507 disk_full；剩余充足（验证机磁盘
+  // 可能很大）则安静跳过——确定性覆盖由 verify-all 的独立实例（把预留调到 4 TiB，
+  // 任何上传都必然空间不足）负责，这里不假装能覆盖所有磁盘。
+  console.log("\n[8b] 磁盘满预检");
+  const diskProbe = await json("POST", "/api/v1/uploads", {
+    token,
+    body: { name: "disk-full-probe.bin", size: 1024 * 1024 * 1024 },
+  });
+  if (diskProbe.status === 507) {
+    check(
+      diskProbe.body?.error === "disk_full",
+      "空间不足时建会话返回 507 disk_full",
+      `status=${diskProbe.status}`,
+    );
+    check(typeof diskProbe.body?.freeBytes === "number", "507 携带 freeBytes");
+    check(typeof diskProbe.body?.requiredBytes === "number", "507 携带 requiredBytes");
+  } else if (diskProbe.status === 200) {
+    ok("剩余空间充足，预检不拦合法上传（跳过 507 断言）");
+    const abortProbe = await json("DELETE", `/api/v1/uploads/${diskProbe.body?.uploadId}`, { token });
+    check(abortProbe.status === 200, "清理探测会话", `status=${abortProbe.status}`);
+  } else {
+    check(
+      false,
+      "磁盘满预检返回异常状态",
+      `status=${diskProbe.status} body=${JSON.stringify(diskProbe.body)}`,
+    );
+  }
+
   // ---------------------------------------------------------------- 9. 设备撤销
   //
   // 配对一次 = 永久全权访问，撤销是唯一的止损手段。这一节放在最后：
