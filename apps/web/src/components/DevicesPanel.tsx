@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { DeviceInfoDto } from "@lan-drop/protocol";
 
@@ -19,6 +19,17 @@ export function DevicesPanel(props: { onClose: () => void }) {
   const [devices, setDevices] = useState<DeviceInfoDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // 对话框语义的两块拼图：打开时焦点进入面板，Esc 关闭
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [props.onClose]);
 
   const reload = useCallback(async () => {
     try {
@@ -71,7 +82,7 @@ export function DevicesPanel(props: { onClose: () => void }) {
       >
         <header className="devices-header">
           <h2>设备管理</h2>
-          <button type="button" className="ghost" onClick={props.onClose}>
+          <button ref={closeButtonRef} type="button" className="ghost" onClick={props.onClose}>
             关闭
           </button>
         </header>

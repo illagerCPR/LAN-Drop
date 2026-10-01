@@ -87,7 +87,7 @@ export function App() {
 
   if (phase === "loading") {
     return (
-      <div className="center-screen">
+      <div className="center-screen" role="status">
         <div className="spinner" aria-hidden="true" />
         <p className="dim">正在连接服务器…</p>
       </div>

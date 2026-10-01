@@ -705,3 +705,10 @@ button.danger:disabled {
   margin: 12px 0 0;
   font-size: 13px;
 }
+
+/* ---- 无障碍：键盘焦点可见 ---- */
+:focus-visible {
+  outline: 2px solid #4f7cff;
+  outline-offset: 2px;
+  border-radius: 4px;
+}

@@ -120,12 +120,17 @@ export function PairingScreen(props: { info: ServerInfoDto; onPaired: (pairing: 
                 marginSize={1}
                 bgColor="#ffffff"
                 fgColor="#0b1220"
+                role="img"
+                aria-label="配对二维码，用手机浏览器扫码即可自动填入配对码"
               />
             </div>
             <p className="pair-url dim">{codeInfo.urls[0]}</p>
             <div className="code-row">
               <span className="pair-code">{codeInfo.code}</span>
-              <span className="dim">有效 {Math.floor(remainingSeconds / 60)}:{String(remainingSeconds % 60).padStart(2, "0")}</span>
+              {/* 每秒跳动的倒计时对读屏是持续噪声：视觉用户可见，读屏用户跳过 */}
+              <span className="dim" aria-hidden="true">
+                有效 {Math.floor(remainingSeconds / 60)}:{String(remainingSeconds % 60).padStart(2, "0")}
+              </span>
             </div>
             <button
               type="button"
@@ -154,6 +159,7 @@ export function PairingScreen(props: { info: ServerInfoDto; onPaired: (pairing: 
                 value={manualCode}
                 onChange={(event) => setManualCode(event.target.value)}
                 placeholder="例如 7F3K-9QPD"
+                aria-label="配对码"
                 autoComplete="off"
                 autoCapitalize="characters"
                 spellCheck={false}
@@ -166,7 +172,11 @@ export function PairingScreen(props: { info: ServerInfoDto; onPaired: (pairing: 
           </div>
         )}
 
-        {errorText !== null && <p className="error-text">{errorText}</p>}
+        {errorText !== null && (
+          <p className="error-text" role="alert">
+            {errorText}
+          </p>
+        )}
       </div>
     </div>
   );

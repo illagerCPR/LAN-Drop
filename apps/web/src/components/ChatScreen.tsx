@@ -354,11 +354,16 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
         </div>
       </header>
 
-      <div className="message-list" ref={listRef} onScroll={handleListScroll}>
+      {/* role="log"：新消息追加时读屏按 polite 级别播报，历史消息不打扰 */}
+      <div className="message-list" ref={listRef} onScroll={handleListScroll} role="log" aria-label="消息时间线">
         <MessageList messages={messages} ownDeviceId={credentials.deviceId} />
       </div>
 
-      {typingName !== null && <div className="typing-hint">{typingName} 正在输入…</div>}
+      {typingName !== null && (
+        <div className="typing-hint" role="status">
+          {typingName} 正在输入…
+        </div>
+      )}
 
       {transfers.length > 0 && (
         <div className="transfer-panel">
@@ -376,7 +381,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
       )}
 
       {actionError !== null && (
-        <div className="action-error">
+        <div className="action-error" role="alert">
           <span>{actionError}</span>
           <button type="button" className="ghost" onClick={() => setActionError(null)}>
             关闭
@@ -401,6 +406,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
           type="button"
           className="icon-btn"
           title="选择文件发送"
+          aria-label="选择文件发送"
           onClick={() => fileInputRef.current?.click()}
         >
           📎
@@ -410,6 +416,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
           value={draft}
           rows={1}
           placeholder="输入文字，Enter 发送；文件可直接拖进窗口或粘贴"
+          aria-label="消息输入框"
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
             // isComposing：中文输入法组词期间的 Enter 不应触发发送
@@ -481,7 +488,7 @@ function TransferRow(props: {
               : PHASE_LABEL[transfer.phase]}
         </span>
       </div>
-      <div className="transfer-bar">
+      <div className="transfer-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={`传输进度 ${percent}%`}>
         <div className="transfer-fill" style={{ width: `${percent}%` }} />
       </div>
       {transfer.error !== null && <div className="transfer-error">{transfer.error}</div>}
