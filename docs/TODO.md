@@ -84,16 +84,34 @@
   1 MB 摘要自证、250 MB 强杀续传（三方 sha256 一致）、撤销踢下线与凭据失效横幅、
   WS 无查询凭据——五项全过；`am kill` 杀不掉带前台服务的进程（要用 `am force-stop`）。
 
+## 发布轮 v0.2.0（2026-10-01 完成）
+
+> 范围经用户确认：未排期清单全部收编、版本号定为 v0.2.0、LICENSE 采用 MIT、
+> release keystore 由 Agent 生成；**三端构建产物与 GitHub Release 放第 2 轮**。
+
+- [x] **自签 TLS + 指纹固定**（决策记录 #3 落地，默认开启）：服务端双监听器
+  （LAN https/wss + 回环明文 8789）、selfsigned 十年期证书落数据根 `tls/`、
+  SPKI 指纹三处同源（/info / 配对响应 / 二维码 `#fp=`）；Android 指纹固定
+  （TOFU + 相机信道核对）与 `TLS_UNTRUSTED` 升级路径。机器验收：verify-all
+  TLS 独立实例 + Android 真实证书单测；真机验收随第 2 轮 release APK。
+- [x] **磁盘满边界**：建会话预检（`LAN_DROP_RESERVE_BYTES`）+ 分片 ENOSPC 507
+  且保留续传现场。验收：verify-all 独立实例（预留 4 TiB）确定性覆盖 507。
+- [x] **Android 多服务端**：多行凭据存储（0.1.x 自动迁移）、Room v3 按服务端隔离、
+  「服务端管理」切换/解除/添加、恢复传输连任务自己的服务端、旧 socket 迟到回调
+  挡板。验收：120 项 JVM 单测；真机切换验收随第 2 轮。
+- [x] **Web 无障碍**：可访问名、role=log/progressbar/status、Esc 关闭、焦点可见。
+- [x] **发布工程**：MIT LICENSE + npm license 字段；CHANGELOG.md（0.1.0/0.2.0）；
+  版本统一 0.2.0；Android release 签名（keystore gitignored，RSA 3072/30 年，
+  证书指纹 `eb483500…`）+ R8（42.9 MB → 4.2 MB，apksigner V2 验证）。
+
 ## 可选增强（规划内，未排期）
 
-- [ ] **边界用例收尾**：磁盘满（0 字节、超长/纯中文文件名、并发上传已做进冒烟）。
-- [ ] **自签 TLS + 指纹固定**（决策记录 #3：列为 P4 可选项）。
 - [ ] **后台「常驻接收」开关**（用户可开关的常驻模式）：当前刻意不做——无传输时进程会被
   系统冻结，做的话要连同冻结后的重连语义一起设计（理由见计划文档 P3-2 坑 1）。
-- [ ] **Android 多服务端**：`Connection?` 单数存储，切换服务端要清缓存重配对。
-- [ ] **Web 无障碍**：aria/role/alt 覆盖接近于零。
-- [ ] **LICENSE 与 npm `license` 字段**、CHANGELOG、Android release 签名与 minify
-  （当前 release APK 实为 debug 配置 42.9 MB）。
+- [ ] **macOS 桌面壳构建**：待有 macOS 机器/需求时再补。
+- [ ] **第 2 轮发布动作**（等用户确认）：真机验收（TLS 重配对 + 多服务端切换 +
+  release APK 实装）→ 三端构建（NSIS / AppImage / 签名 APK）→ tag `v0.2.0`（GPG）
+  → GitHub Release（附 CHANGELOG）。
 
 ## 刻意不做（记录在案，勿当遗漏）
 

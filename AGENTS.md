@@ -12,11 +12,11 @@
 ```bash
 pnpm install
 pnpm -r typecheck           # 全仓类型检查，提交前必跑
-pnpm -r test                # TS 侧单测（node --test 直接跑 .ts，无测试框架）：34 项
+pnpm -r test                # TS 侧单测（node --test 直接跑 .ts，无测试框架）：37 项
 pnpm dev                    # 服务端 --watch，监听 0.0.0.0:8787
 pnpm web:build              # 产出 apps/web/dist（dev 热更用 pnpm web:dev）
 pnpm verify                 # 一键门禁：类型检查 + 单测 + 自起 8899 服务端跑全量冒烟 + 服务端日志 token 泄漏扫描（CI 同款）
-node scripts/smoke-api.mjs  # 93 项端到端冒烟（HTTP + WS + 断点续传 + 0 字节 + 并发竞态 + 收尾摘要 + 撤销）；必须先起服务端，且必须本机跑（配对码仅回环可读）
+node scripts/smoke-api.mjs  # 95 项端到端冒烟（HTTP + WS + 断点续传 + 0 字节 + 并发竞态 + 收尾摘要 + 撤销 + 磁盘满预检探测）；必须先起服务端，且必须本机跑（配对码仅回环可读）
 source scripts/dev-env.sh   # JAVA_HOME / ANDROID_HOME / PATH；非交互 shell 必须显式 source（~/.bashrc 会 early-return）
 cd android && ./gradlew :app:assembleDebug
 pnpm desktop:resources      # 桌面壳资源：esbuild 自包含 server bundle（metafile 检查）+ web/dist + 按运行平台拉 sidecar node
@@ -50,7 +50,18 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - **0 字节文件是合法上传**：会话创建即落空临时文件（`writeEmptyFile`）；complete 里除权威进度外还核对盘上尺寸（`size_mismatch_on_disk` 409）。分片接口对 `remaining<=0` 一律 409，别把它当 bug「修掉」。
 - **complete 接受可选 body.sha256（客户端自证）**：不符 → 422 且会话中止，格式非法 → 400；与建会话时声明的 sha256 地位相同。客户端不声明时只算并存档摘要、不校验（Web 端刻意不声明——浏览器二次读盘是实打实的 UX 代价）。
 - **撤销设备 `DELETE /pair/devices/:id` 仅回环可调**（先鉴权后回环检查）。撤销时必须手动回收该设备的上传会话——`uploads.device_id` **没有外键**，删设备行不级联，漏了会留孤儿会话；消息记录保留（`sender_name` 反范式存储）。`Hub.kickDevice` 以 4401 关连接，客户端据此进凭据失效态。
-- 数据根：Linux `~/.local/share/lan-drop`，Windows `%LOCALAPPDATA%\LAN-Drop`；env 覆盖项（`LAN_DROP_PORT` 等）见 `src/config.ts`。
+- **TLS 默认开启（v0.2.0）**：`src/tls.ts` 用 `selfsigned`（v5 API 是 async、有效期用
+  `notBeforeDate/notAfterDate`，没有 days/algorithm）生成十年期自签证书，落数据根 `tls/`
+  （私钥 0600）；过期/损坏整体重生成。双监听器：LAN 端口 https/wss + `127.0.0.1:8789`
+  回环明文（控制台/配对码免证书警告）。两个 Fastify 实例共享同一 ctx——`Store.close()`
+  已幂等，别再当单实例假设。**SPKI 指纹（sha256，base64url 无填充，恒 43 字符）必须三处同源**：
+  `/info.tlsFingerprint`、配对响应、二维码 `#pair=CODE&fp=…`；改任何一处都要同步。
+  桌面壳 `console_url()` 按 `LAN_DROP_TLS` 语义挑回环端口，与服务端 `parseBoolOr` 保持一致
+  （未设=开，设了只有 "1"/"true" 是开）。
+- **磁盘满两条防线**：建会话预检（`freeDiskBytes` 为 null 时 fail-open 跳过，绝不把查询失败
+  当成空间为零）+ 分片 ENOSPC 回 507 且**保留会话**（残字节由下次追加前的 truncate 截掉）。
+  verify-all 的 507 覆盖靠独立实例把 `LAN_DROP_RESERVE_BYTES` 调到 4 TiB，不是靠真满盘。
+- 数据根：Linux `~/.local/share/lan-drop`，Windows `%LOCALAPPDATA%\LAN-Drop`；env 覆盖项（`LAN_DROP_PORT`、`LAN_DROP_TLS`、`LAN_DROP_LOOPBACK_PORT`、`LAN_DROP_RESERVE_BYTES` 等）见 `src/config.ts`。
 - 展示名 `config.serverName` 默认取 `os.hostname()`，可用 `LAN_DROP_SERVER_NAME` 覆盖。**不要再改回写死的「LAN-Drop 服务端」**：这个名字显示在手机聊天页标题与 Web 控制台标题上，那个位置唯一的职责是回答「我在跟哪台机器说话」，而「服务端」既是实现术语、多台 PC 时又全都同名。改完记得重启服务端（名字在 boot 时确定）。
 
 ## 桌面常驻壳（Tauri，P4-6）
@@ -277,14 +288,31 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - SAF 源文件必须 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`，否则进程重启后续传打不开源文件；传完/取消时 `release`。**只有读权限的 URI 不能用 `"rw"` 探测长度**，会抛 `SecurityException` 被误判成「文件丢失」，固定用 `"r"`。
 - 失败判据：4xx（除 408/429）与 `SecurityException` = 永久失败，其余（IO、5xx、超时）= 可恢复，落到「已暂停」保住进度。下载结束时必须核对字节数——服务端截断连接时 `read()` 返回 -1 而不抛错。
 - debug 构建的**实际包名带 `.debug` 后缀**（`applicationIdSuffix`），`am start` / `run-as` / `pm list packages` 都要用它，用 `applicationId` 会报「Activity class does not exist」并误判成没装上。
-- `./gradlew :app:testDebugUnitTest` 是 109 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 18 项协议一致性（改协议时同步更新里面的真实响应样本，含收尾摘要请求体的字段名与 null 省略行为），`net/WsEnvelopeParserTest` 6 项 WS 事件信封解析（`message.new` 真实样本、`message.deleted`/`messages.purged` 必须解析为对应事件，缺 payload、未知 type 与坏 JSON 必须拒绝——协议向前兼容靠这条），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐），`scan/QrDecoderTest` 5 项扫码解码（stride/pixelStride 打包还原、非法输入返 null），`data/prefs/PairingPayloadTest` 6 项配对链接解析边界。
+- **TLS 指纹固定是信任边界，不是可选装饰**（`net/FingerprintTrustManager.kt`）：SPKI sha256
+  （base64url 无填充，43 字符）来自配对二维码 `#fp=`（相机信道），配对时必须与服务端
+  `/info` 自报值核对，不符 = 中间人，直接中止；手输地址没有二维码指纹，走 TOFU（宽松
+  TLS 只允许「配对引导」用）。`FingerprintPins` 比较前先归一化（`+`/`/`/`=` ↔ `-_`）。
+  pinned 客户端按指纹缓存在 AppContainer，`hostnameVerifier` 放行是模型的一部分（指纹即
+  身份），别「顺手加回」主机名校验——裸 IP + 自签证书下它永远不通过。
+- **多服务端**：`ConnectionStore` 是多行存储（`server.<id>.*` + `activeServerId`，0.1.x
+  单服务端格式首读自动迁移）；`connection`/`connections` 两个 StateFlow。消息与传输按
+  `server_id` 隔离（Room v3，`(server_id, seq)` 联合唯一）；**恢复传输连任务自己的服务端**
+  （`connectionFor(transfer.serverId)`），不是当前选中的。`LanDropSocket` 的 listener 按
+  连接实例把关——旧 socket 的迟到回调一律忽略，否则旧服务端消息会写进新服务端的缓存行。
+  换服务端**不再清缓存**（游标各自单调，旧文档里的清缓存逻辑已删）。
+- **release 构建已签名 + R8**：签名材料 `android/keystore/`（gitignored：jks + 
+  keystore.properties，丢失则无法再为更新签名——务必让用户备份）。`keystore.properties`
+  缺失时 assembleRelease 退回未签名产物，CI 不受影响。`build.gradle.kts` 顶部
+  `import java.util.Properties` 不能省（脚本里裸写 `java.util.Properties` 会 Unresolved）。
+- `./gradlew :app:testDebugUnitTest` 是 120 项 JVM 单测（无需设备与服务端）：`ProtocolJsonTest` 18 项协议一致性（改协议时同步更新里面的真实响应样本，含收尾摘要请求体的字段名与 null 省略行为），`net/WsEnvelopeParserTest` 6 项 WS 事件信封解析（`message.new` 真实样本、`message.deleted`/`messages.purged` 必须解析为对应事件，缺 payload、未知 type 与坏 JSON 必须拒绝——协议向前兼容靠这条），`notify/TransferNoticeTest` 17 项通知逻辑，`net/ServerDiscoveryTest` 6 项发现应答解析（非本服务 / 未来版本 / 坏报文必须拒绝——UDP 报文来自局域网任意设备，解析必须严格），`share/ShareIntentTest` 18 项分享内容归一化（**按媒体条目身份去重**——真实 URI 对、不同卷、带查询串、缩略图表、SAF 文档 URI，另加 `ClipData` 兜底、`data` 兜底、空白文字、非分享 action、`String[]` 兼容），`media/ThumbnailSourceTest` 18 项缩略图取图顺序，`media/ThumbnailGeometryTest` 12 项预览尺寸与降采样算术，`protocol/LinkTextTest` 3 项链接判定（其中一项用 15 条边界表与事实源逐条对齐），`scan/QrDecoderTest` 5 项扫码解码（stride/pixelStride 打包还原、非法输入返 null），`data/prefs/PairingPayloadTest` 10 项配对链接解析边界（含 `#fp=` TLS 指纹 4 项）。
 - 文件下载落盘路径是 `Download/LAN-Drop`（MediaStore `RELATIVE_PATH`，注意大小写与连字符）。
 
 ### UDP 自动发现与连接状态（P3-3）
 
 - 发现协议两端成对实现：服务端 `apps/server/src/discovery.ts`、客户端 `net/ServerDiscovery.kt`。
   探测报文是文本 `LANDROP-DISCOVER-v1`（UDP 8788，**整包精确匹配**）；应答 JSON
-  `{ service, v, id, name, port }`。改任何一端的字段/魔法串/端口必须同步另一端，
+  `{ service, v, id, name, port, tls }`（`tls` 是 v0.2.0 新增，老服务端没有该字段，
+  客户端按 false 处理）。改任何一端的字段/魔法串/端口必须同步另一端，
   Android 侧常量在 `ServerDiscovery.DISCOVERY_PORT`。
 - **问答式而非定时广播**：应答是单播，Android 不申请 `MulticastLock` 也收得到；
   客户端要同时发 `255.255.255.255` 与各网卡定向广播（部分 AP/ROM 组合会吞其中一种）。
@@ -294,8 +322,9 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   RECONNECTING**——重试一万次也是 401，继续显示「正在重连…」是实测踩过的误导
   （服务端设备行丢失后横幅挂了半天）。找回扫描在凭据失效时跳过（服务端活着，扫了也空转）。
 - 断线找回按 `serverId` 匹配、更新 `ConnectionStore.updateBaseUrl`（凭据不动），
-  `connection` StateFlow 新值会自动触发重连。别在这里做「换 serverId 就重新配对」以外的事——
-  换了 serverId 的服务端必须走清缓存重配对（见 `PairingRepository.pair` 里的既有逻辑）。
+  `connection` StateFlow 新值会自动触发重连。扫描发现「同一台服务端但已启用 TLS」而本地
+  凭据没有指纹时，进 `SocketState.TLS_UNTRUSTED` 停止重连（指纹只能来自重新扫码）；
+  切换服务端**不清缓存**（Room 按服务端隔离，旧文档的清缓存逻辑已删）。
 - **自动接收默认关，且开启时刻即基准点（`autoReceiveSince`）**：只自动下载晚于基准点的
   入站文件消息，防止开启后首次全量同步把服务端历史文件全拉下来。去重靠两层：
   进程内 `autoReceivedIds`（挡 WS 推送与增量同步的并发窗口）+ 传输表 `message_id` 查询
