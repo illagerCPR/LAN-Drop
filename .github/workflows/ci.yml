@@ -44,8 +44,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      # 接受 SDK 许可证后，AGP 在配置阶段自动补齐缺失的 platforms;android-37 等
-      - uses: android-actions/setup-android@v3
+      # 不用 android-actions/setup-android：v3 会安装已被 Google 移除的 `tools` 包而失败。
+      # 托管 runner 自带 Android SDK（/usr/local/lib/android/sdk，许可证已接受），
+      # AGP 在配置阶段自动补齐缺失的 platforms;android-37 等组件即可
       # Gradle 发行版走 wrapper 里已提交的腾讯云镜像（公开可达），依赖走 google()/
       # 阿里云镜像（settings.gradle.kts 顶部注释），均不需要 GitHub 直链
       - working-directory: android
