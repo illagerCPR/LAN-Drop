@@ -101,7 +101,14 @@ fun AppRoot() {
         }
     } else if (addingServer) {
         // 已配对时添加第二台服务端：同一个配对页，多一个返回出口；
-        // 配对成功后 store.save 会切换活动服务端，界面自动回到会话页
+        // 配对成功（pairingCompleted 信号）或点「返回聊天」都会退出这一模式
+        val pairingCompleted by pairingViewModel.pairingCompleted.collectAsStateWithLifecycle()
+        LaunchedEffect(pairingCompleted) {
+            if (pairingCompleted) {
+                addingServer = false
+                pairingViewModel.consumePairingCompleted()
+            }
+        }
         if (qrScanning) {
             QrScanScreen(
                 onBack = { qrScanning = false },

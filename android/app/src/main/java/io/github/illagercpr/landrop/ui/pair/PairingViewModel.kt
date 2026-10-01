@@ -40,6 +40,13 @@ class PairingViewModel(
     private val _feedback = MutableStateFlow<Feedback?>(null)
     val feedback: StateFlow<Feedback?> = _feedback.asStateFlow()
 
+    /**
+     * 配对成功的一次性信号：AppRoot 的「添加服务端」覆盖层据此自动退出。
+     * 不能复用 [feedback]——「测试连接」成功也是成功语气，不该把用户踢出配对页。
+     */
+    private val _pairingCompleted = MutableStateFlow(false)
+    val pairingCompleted: StateFlow<Boolean> = _pairingCompleted.asStateFlow()
+
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
@@ -82,9 +89,12 @@ class PairingViewModel(
         viewModelScope.launch {
             _busy.value = true
             when (val result = pairing.pair(address, code, scannedFingerprint)) {
-                is PairResult.Success ->
-                    // 凭据落盘后 ConnectionStore 会推送新值，界面自动切到会话页
+                is PairResult.Success -> {
+                    // 凭据落盘后 ConnectionStore 会推送新值，界面自动切到会话页；
+                    // 「添加服务端」覆盖层据此信号自动关闭
+                    _pairingCompleted.value = true
                     _feedback.value = Feedback("已连接到「${result.connection.serverName}」", isError = false)
+                }
 
                 is PairResult.Failure -> _feedback.value = Feedback(result.message, isError = true)
             }
@@ -148,6 +158,11 @@ class PairingViewModel(
     }
 
     data class Feedback(val message: String, val isError: Boolean)
+
+    /** 消费配对完成信号（AppRoot 关闭覆盖层后调用，避免下次进入配对页立即被弹回）。 */
+    fun consumePairingCompleted() {
+        _pairingCompleted.value = false
+    }
 
     private companion object {
         const val MAX_CODE_LENGTH = 32
