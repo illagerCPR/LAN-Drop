@@ -6,6 +6,7 @@ import io.github.illagercpr.landrop.data.local.LanDropDatabase
 import io.github.illagercpr.landrop.data.prefs.Connection
 import io.github.illagercpr.landrop.data.prefs.ConnectionStore
 import io.github.illagercpr.landrop.net.DiscoveredServer
+import io.github.illagercpr.landrop.net.FingerprintPins
 import io.github.illagercpr.landrop.net.LanDropApi
 import io.github.illagercpr.landrop.net.LanDropSocket
 import io.github.illagercpr.landrop.net.ServerDiscovery
@@ -43,15 +44,21 @@ class PairingRepository(
     /** 上次找回扫描的时间（单调时钟），防止长时间断线期间高频 UDP 扫描。 */
     @Volatile
     private var lastRecoveryAtMs = 0L
-    /** 探测服务端，成功时返回它的展示名（配对页的「测试连接」按钮用）。 */
-    suspend fun probe(rawAddress: String): Result<String> {
+    /**
+     * 探测服务端，成功时返回它的展示名（配对页的「测试连接」按钮用）。
+     *
+     * [scannedFingerprint] 来自配对二维码（`#fp=` 参数）：有它就走 pinned 客户端，
+     * 证书不符直接握手失败——这是最强的首次接触；没有（手输地址）就走配对引导的
+     * 宽松 TLS，信任边界退化为 TOFU（见 [pair]）。
+     */
+    suspend fun probe(rawAddress: String, scannedFingerprint: String? = null): Result<String> {
         val baseUrl = ConnectionStore.normalizeBaseUrl(rawAddress)
         if (baseUrl.isEmpty()) {
             return Result.failure(IllegalArgumentException("请输入服务器地址"))
         }
 
         return try {
-            val info = api.info(baseUrl)
+            val info = api.info(baseUrl, scannedFingerprint)
             if (info.protocolVersion != ProtocolVersion.CURRENT) {
                 Result.failure(
                     IllegalStateException(
@@ -66,8 +73,21 @@ class PairingRepository(
         }
     }
 
-    /** 执行配对；成功后凭据已写入 [ConnectionStore]，界面会自动切到会话页。 */
-    suspend fun pair(rawAddress: String, code: String): PairResult {
+    /**
+     * 执行配对；成功后凭据已写入 [ConnectionStore]，界面会自动切到会话页。
+     *
+     * TLS 信任决策（自签证书 + SPKI 指纹固定）：
+     *  1. 服务端 `tls=true` 却没下发指纹 → 协议不完整，拒绝配对；
+     *  2. 二维码带了指纹（[scannedFingerprint]）→ 必须与服务端自报一致，
+     *     不一致就是中间人，**立即中止**（相机信道 vs 网络信道对不上的唯一解释）；
+     *  3. 没有二维码指纹（手输地址）→ 采纳服务端自报指纹（TOFU，与 SSH 首连
+     *     同一信任边界），固化后业务连接全部按它固定校验。
+     */
+    suspend fun pair(
+        rawAddress: String,
+        code: String,
+        scannedFingerprint: String? = null,
+    ): PairResult {
         val baseUrl = ConnectionStore.normalizeBaseUrl(rawAddress)
         if (baseUrl.isEmpty()) {
             return PairResult.Failure("请输入服务器地址")
@@ -77,19 +97,40 @@ class PairingRepository(
         }
 
         return try {
-            val info = api.info(baseUrl)
+            val info = api.info(baseUrl, scannedFingerprint)
             if (info.protocolVersion != ProtocolVersion.CURRENT) {
                 return PairResult.Failure(
                     "协议版本不匹配：服务端 v${info.protocolVersion}，客户端 v${ProtocolVersion.CURRENT}",
                 )
             }
 
+            val serverFingerprint = info.tlsFingerprint?.takeIf { it.isNotBlank() }
+            if (info.tls && serverFingerprint == null) {
+                return PairResult.Failure("服务端已启用加密但未下发证书指纹，请把服务端升级到配套版本")
+            }
+            if (scannedFingerprint != null && !FingerprintPins.matches(scannedFingerprint, serverFingerprint!!)) {
+                return PairResult.Failure("服务端证书指纹与二维码不一致，当前网络可能被劫持，已中止配对")
+            }
+            val effectiveFingerprint = serverFingerprint
+
             val response = api.pair(
                 baseUrl = baseUrl,
                 code = code.trim(),
                 deviceName = store.deviceName,
                 platform = platformName(),
+                tlsFingerprint = effectiveFingerprint,
             )
+
+            // 配对开始与结束时服务端各报了一次指纹：两头都有却不一致 = 信道中途被换，
+            // 这份凭据不能要
+            val responseFingerprint = response.tlsFingerprint?.takeIf { it.isNotBlank() }
+            if (
+                effectiveFingerprint != null &&
+                responseFingerprint != null &&
+                !FingerprintPins.matches(effectiveFingerprint, responseFingerprint)
+            ) {
+                return PairResult.Failure("配对过程中服务端证书发生变化，请重新扫码配对")
+            }
 
             val connection = Connection(
                 baseUrl = baseUrl,
@@ -97,6 +138,7 @@ class PairingRepository(
                 deviceToken = response.deviceToken,
                 serverId = response.serverId,
                 serverName = response.serverName.ifBlank { info.serverName },
+                tlsFingerprint = effectiveFingerprint,
             )
 
             val previousServerId = store.lastServerId
@@ -123,7 +165,7 @@ class PairingRepository(
      */
     suspend fun refreshServerName() {
         val connection = store.connection.value ?: return
-        val info = runCatching { api.info(connection.baseUrl) }.getOrNull() ?: return
+        val info = runCatching { api.info(connection.baseUrl, connection.tlsFingerprint) }.getOrNull() ?: return
         val name = info.serverName.trim()
         if (name.isNotEmpty() && name != connection.serverName) {
             store.updateServerName(name)
@@ -147,6 +189,8 @@ class PairingRepository(
             delay(RECOVERY_DELAY_MS)
             // 凭据失效时服务端明明活着，扫描只会得到同一个地址；等用户重新配对
             if (socket.state.value == SocketState.CREDENTIALS_INVALID) return@launch
+            // TLS_UNTRUSTED 同理：指纹只能来自重新扫码，扫描补不上
+            if (socket.state.value == SocketState.TLS_UNTRUSTED) return@launch
             if (socket.state.value == SocketState.ONLINE) return@launch
             // 找回成功时地址已写入 ConnectionStore，重连由既有机制自动触发
             runCatching { recoverIfServerMoved() }
@@ -158,6 +202,10 @@ class PairingRepository(
      *
      * 返回是否发生了地址变更。找不到（服务端确实关了）返回 false，
      * 交给既有的退避重连继续按旧地址重试——那仍是正确的默认行为。
+     *
+     * 特例：扫描发现「还是那台服务端」但它已启用 TLS（升级场景），而本地凭据
+     * 是升级前的老配对（没有指纹）——指纹只能来自重新扫码，此时进入
+     * [SocketState.TLS_UNTRUSTED] 停止无意义的重连循环，横幅直接给出重新配对的出路。
      */
     suspend fun recoverIfServerMoved(): Boolean {
         val connection = store.connection.value ?: return false
@@ -169,6 +217,10 @@ class PairingRepository(
 
         val servers = runCatching { discovery.discover(RECOVERY_SCAN_TIMEOUT_MS) }.getOrNull().orEmpty()
         val match = servers.firstOrNull { it.id == connection.serverId } ?: return false
+        if (match.tls && connection.tlsFingerprint.isNullOrBlank()) {
+            socket.enterTlsUntrusted()
+            return false
+        }
         if (match.baseUrl == connection.baseUrl) return false
 
         store.updateBaseUrl(match.baseUrl)

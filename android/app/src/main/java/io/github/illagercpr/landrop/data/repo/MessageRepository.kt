@@ -113,7 +113,7 @@ class MessageRepository(
                     _peerOnline.value = false
                     _onlineCount.value = 0
                 } else {
-                    socket.connect(connection.baseUrl, connection.deviceToken)
+                    socket.connect(connection)
                 }
             }
         }

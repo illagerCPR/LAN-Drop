@@ -19,6 +19,8 @@ data class DiscoveryAnnounceDto(
     val id: String,
     val name: String,
     val port: Int,
+    /** LAN 监听器是否 TLS（自签证书 + 指纹固定）；老服务端无此字段，默认 false */
+    val tls: Boolean = false,
 )
 
 /** 扫描到的一台服务端。 */
@@ -26,6 +28,8 @@ data class DiscoveredServer(
     val id: String,
     val name: String,
     val baseUrl: String,
+    /** 服务端 LAN 端口是否 https；扫描到的地址据此决定走 https 还是 http */
+    val tls: Boolean,
 )
 
 /** 解析发现应答；任何不合规（非本服务、版本不符、字段缺失）都返回 null。 */
@@ -92,7 +96,8 @@ class ServerDiscovery(
                 found[host] = DiscoveredServer(
                     id = announce.id,
                     name = announce.name.ifBlank { "LAN-Drop" },
-                    baseUrl = "http://$host:${announce.port}",
+                    baseUrl = "${if (announce.tls) "https" else "http"}://$host:${announce.port}",
+                    tls = announce.tls,
                 )
             }
         }

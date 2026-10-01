@@ -67,6 +67,11 @@ data class ServerInfoDto(
     @SerialName("serverId") val serverId: String,
     @SerialName("serverName") val serverName: String,
     @SerialName("tls") val tls: Boolean = false,
+    /**
+     * SPKI 指纹（证书公钥 sha256，base64url 无填充）。仅 `tls=true` 时由服务端下发，
+     * 是客户端固定校验的种子；老服务端没有此字段时默认 null。
+     */
+    @SerialName("tlsFingerprint") val tlsFingerprint: String? = null,
     /** 服务端是否要求配对后才可收发 */
     @SerialName("pairingRequired") val pairingRequired: Boolean = true,
 )
@@ -87,6 +92,8 @@ data class PairResponseDto(
     @SerialName("deviceToken") val deviceToken: String,
     @SerialName("serverId") val serverId: String,
     @SerialName("serverName") val serverName: String,
+    /** TLS 开启时与 /info、二维码同源的 SPKI 指纹；用于配对结束前的一致性核对 */
+    @SerialName("tlsFingerprint") val tlsFingerprint: String? = null,
 )
 
 // ------------------------------------------------------------------ 消息

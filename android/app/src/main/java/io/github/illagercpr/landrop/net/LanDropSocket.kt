@@ -1,5 +1,6 @@
 package io.github.illagercpr.landrop.net
 
+import io.github.illagercpr.landrop.data.prefs.Connection
 import io.github.illagercpr.landrop.protocol.ApiPath
 import io.github.illagercpr.landrop.protocol.MessageDto
 import io.github.illagercpr.landrop.protocol.WsHelloPayloadDto
@@ -39,6 +40,13 @@ enum class SocketState {
      * 唯一出路是解除配对重新配对。
      */
     CREDENTIALS_INVALID,
+
+    /**
+     * 服务端已启用 TLS（自签证书），但本地凭据没有指纹（0.1.0 升级上来的老配对）。
+     * 指纹只能来自配对二维码，重试与找回扫描都无法补上——横幅必须直接给出
+     * 「解除配对后重新扫码」的出路，而不是假装能重连。
+     */
+    TLS_UNTRUSTED,
 }
 
 /** 服务端推来的事件（已解析）。未知类型被静默忽略，便于协议向前兼容。 */
@@ -80,7 +88,8 @@ sealed interface WsEvent {
  * （TCP 半开连接由协议层 ping 帧探活）。
  */
 class LanDropSocket(
-    private val client: OkHttpClient,
+    /** 按连接的 TLS 指纹挑客户端（pinned/默认），见 [HttpClientProvider.createForTls]。 */
+    private val clientFor: (String?) -> OkHttpClient,
     private val json: Json,
     private val scope: CoroutineScope,
 ) {
@@ -95,14 +104,14 @@ class LanDropSocket(
     private var attempt = 0
 
     /** 当前连接目标；断开重连时复用，不需要调用方再传一次。 */
-    private var target: Pair<String, String>? = null
+    private var target: Connection? = null
 
     /** 主动断开标志：区分「用户断开」与「网络掉线」，前者不触发重连。 */
     @Volatile
     private var manualClose = false
 
-    fun connect(baseUrl: String, token: String) {
-        target = baseUrl to token
+    fun connect(connection: Connection) {
+        target = connection
         manualClose = false
         attempt = 0
         reconnectJob?.cancel()
@@ -118,21 +127,34 @@ class LanDropSocket(
         _state.value = SocketState.IDLE
     }
 
+    /**
+     * 标记「服务端已启用加密但本地没有指纹」并停掉重连（见 [SocketState.TLS_UNTRUSTED]）。
+     * 由配对层的找回扫描发现这一情形时调用。
+     */
+    fun enterTlsUntrusted() {
+        manualClose = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        socket?.close(NORMAL_CLOSURE, "client closing")
+        socket = null
+        _state.value = SocketState.TLS_UNTRUSTED
+    }
+
     // ------------------------------------------------------------------ 内部
 
     private fun open() {
-        val (baseUrl, token) = target ?: return
+        val connection = target ?: return
         _state.value = if (attempt == 0) SocketState.CONNECTING else SocketState.RECONNECTING
 
         // 凭据走 Authorization 头而不是 ?token=：URL 会原样进服务端访问日志与各中间层。
         // OkHttp 的 WebSocket 握手完全可以带自定义请求头，只有浏览器才被迫用查询参数
         // （服务端对 WS 保留查询参数通道正是为了浏览器）。
         val request = Request.Builder()
-            .url(baseUrl.toWebSocketBase() + ApiPath.WS)
-            .header("Authorization", "Bearer $token")
+            .url(connection.baseUrl.toWebSocketBase() + ApiPath.WS)
+            .header("Authorization", "Bearer ${connection.deviceToken}")
             .build()
 
-        socket = client.newWebSocket(request, listener)
+        socket = clientFor(connection.tlsFingerprint).newWebSocket(request, listener)
     }
 
     private val listener = object : WebSocketListener() {

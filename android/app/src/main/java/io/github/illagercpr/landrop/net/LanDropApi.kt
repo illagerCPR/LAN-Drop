@@ -39,14 +39,21 @@ class ApiException(
 
 /** HTTP 层之上的一薄层：只负责拼请求、解 JSON、把错误翻译成 [ApiException]。 */
 class LanDropApi(
-    private val client: OkHttpClient,
+    /**
+     * 按连接的 TLS 指纹挑选 OkHttp 客户端（null = 明文/默认客户端）。
+     * 由 [io.github.illagercpr.landrop.di.AppContainer] 注入并做缓存；
+     * pinned 客户端的信任模型见 [HttpClientProvider.createForTls]。
+     */
+    private val clientFor: (String?) -> OkHttpClient,
     private val json: Json,
 ) {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    private fun clientFor(connection: Connection): OkHttpClient = clientFor(connection.tlsFingerprint)
+
     /** 服务端元信息。未配对也可调用，是「地址填对了没」的第一道校验。 */
-    suspend fun info(baseUrl: String): ServerInfoDto =
-        decode(execute(Request.Builder().url("$baseUrl${ApiPath.INFO}").get().build()))
+    suspend fun info(baseUrl: String, tlsFingerprint: String? = null): ServerInfoDto =
+        decode(execute(clientFor(tlsFingerprint), Request.Builder().url("$baseUrl${ApiPath.INFO}").get().build()))
 
     /** 用一次性配对码换取长期凭据。 */
     suspend fun pair(
@@ -54,6 +61,7 @@ class LanDropApi(
         code: String,
         deviceName: String,
         platform: String,
+        tlsFingerprint: String? = null,
     ): PairResponseDto {
         val body = json.encodeToString(
             PairRequestDto.serializer(),
@@ -63,7 +71,7 @@ class LanDropApi(
             .url("$baseUrl${ApiPath.PAIR}")
             .post(body.toRequestBody(jsonMediaType))
             .build()
-        return decode(execute(request))
+        return decode(execute(clientFor(tlsFingerprint), request))
     }
 
     /** 增量拉取消息；`since` 语义是严格大于，首次全量传 0。 */
@@ -71,7 +79,7 @@ class LanDropApi(
         val request = authorized(connection, "${ApiPath.MESSAGES}?since=$since&limit=$limit")
             .get()
             .build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /** 发送文字或链接（文件走上传接口）。 */
@@ -83,7 +91,7 @@ class LanDropApi(
         val request = authorized(connection, ApiPath.MESSAGES)
             .post(body.toRequestBody(jsonMediaType))
             .build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /** 创建上传会话；返回的 `receivedBytes` 是续传锚点（新会话恒为 0）。 */
@@ -100,7 +108,7 @@ class LanDropApi(
         val request = authorized(connection, ApiPath.UPLOADS)
             .post(body.toRequestBody(jsonMediaType))
             .build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /**
@@ -119,7 +127,7 @@ class LanDropApi(
         val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId?offset=$offset")
             .patch(chunk.toRequestBody(OCTET_STREAM, 0, length))
             .build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /**
@@ -137,13 +145,13 @@ class LanDropApi(
         val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId/complete")
             .post(body.toRequestBody(jsonMediaType))
             .build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /** 中止上传并让服务端删除临时分片。 */
     suspend fun abortUpload(connection: Connection, uploadId: String) {
         val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId").delete().build()
-        execute(request).close()
+        execute(clientFor(connection), request).close()
     }
 
     /**
@@ -153,14 +161,14 @@ class LanDropApi(
      */
     suspend fun uploadStatus(connection: Connection, uploadId: String): UploadStatusDto {
         val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId").get().build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /** 列出本设备在服务端的上传会话；`state` 为空表示不过滤。 */
     suspend fun listUploads(connection: Connection, state: String? = null): UploadListDto {
         val query = if (state != null) "?state=$state" else ""
         val request = authorized(connection, "${ApiPath.UPLOADS}$query").get().build()
-        return decode(execute(request))
+        return decode(execute(clientFor(connection), request))
     }
 
     /**
@@ -184,7 +192,7 @@ class LanDropApi(
 
     /** 打开下载流。返回的 [Response] 由调用方关闭。 */
     suspend fun openDownload(connection: Connection, fileId: String, rangeFrom: Long?): Response {
-        val response = client.newCall(downloadRequest(connection, fileId, rangeFrom)).await()
+        val response = clientFor(connection).newCall(downloadRequest(connection, fileId, rangeFrom)).await()
         if (!response.isSuccessful) {
             val error = response.use { readError(it) }
             throw error
@@ -199,7 +207,7 @@ class LanDropApi(
             .url("${connection.baseUrl}$pathAndQuery")
             .header("Authorization", "Bearer ${connection.deviceToken}")
 
-    private suspend fun execute(request: Request): Response {
+    private suspend fun execute(client: OkHttpClient, request: Request): Response {
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
             throw response.use { readError(it) }

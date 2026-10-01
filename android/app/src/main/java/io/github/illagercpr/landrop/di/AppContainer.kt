@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
 
 /**
  * 手写依赖容器。
@@ -42,7 +43,18 @@ class AppContainer(context: Context) {
     /** 应用级作用域：长连接重试、文件传输都挂在这里，跨界面存活。 */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val httpClient = HttpClientProvider.create()
+    private val baseHttpClient = HttpClientProvider.create()
+
+    /** pinned 客户端按指纹缓存：同一指纹的连接复用同一客户端（连接池独立是刻意的）。 */
+    private val pinnedClients = java.util.concurrent.ConcurrentHashMap<String, OkHttpClient>()
+
+    /** 明文/默认客户端；带指纹的连接用 pinned 客户端（指纹即身份，见 FingerprintTrustManager）。 */
+    private fun clientFor(fingerprint: String?): OkHttpClient =
+        if (fingerprint.isNullOrBlank()) {
+            baseHttpClient
+        } else {
+            pinnedClients.getOrPut(fingerprint) { HttpClientProvider.createForTls(fingerprint) }
+        }
 
     val connectionStore = ConnectionStore(appContext)
 
@@ -50,12 +62,12 @@ class AppContainer(context: Context) {
 
     private val database = LanDropDatabase.get(appContext)
 
-    private val api = LanDropApi(httpClient, json)
+    private val api = LanDropApi(::clientFor, json)
 
     /** 时间线图片预览：内存 + 磁盘缓存；本机已有副本优先，其次回服务端拉原图降采样。 */
     val thumbnails = ThumbnailLoader(appContext, api, connectionStore)
 
-    private val socket = LanDropSocket(httpClient, json, appScope)
+    private val socket = LanDropSocket(::clientFor, json, appScope)
 
     /** UDP 局域网发现：配对页扫描与断线找回共用同一个客户端。 */
     private val discovery = ServerDiscovery(json)

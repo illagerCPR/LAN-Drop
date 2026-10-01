@@ -26,6 +26,13 @@ class PairingViewModel(
     var code by mutableStateOf("")
         private set
 
+    /**
+     * 扫码得到的 TLS 指纹（`#fp=` 参数），随下次配对/探活交给仓库核对。
+     * 用户手动改地址即视为重新声明目标，指纹随之作废（避免拿 A 服务端的
+     * 指纹去配 B 服务端）；扫到新码时会覆盖。
+     */
+    private var scannedFingerprint: String? = null
+
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
@@ -43,6 +50,7 @@ class PairingViewModel(
 
     fun onAddressChange(value: String) {
         address = value
+        scannedFingerprint = null
         _feedback.value = null
     }
 
@@ -59,7 +67,7 @@ class PairingViewModel(
 
         viewModelScope.launch {
             _busy.value = true
-            val result = pairing.probe(address)
+            val result = pairing.probe(address, scannedFingerprint)
             _feedback.value = result.fold(
                 onSuccess = { name -> Feedback("已连接到「$name」，可以输入配对码了", isError = false) },
                 onFailure = { Feedback(it.message ?: "连接失败", isError = true) },
@@ -73,7 +81,7 @@ class PairingViewModel(
 
         viewModelScope.launch {
             _busy.value = true
-            when (val result = pairing.pair(address, code)) {
+            when (val result = pairing.pair(address, code, scannedFingerprint)) {
                 is PairResult.Success ->
                     // 凭据落盘后 ConnectionStore 会推送新值，界面自动切到会话页
                     _feedback.value = Feedback("已连接到「${result.connection.serverName}」", isError = false)
@@ -108,21 +116,29 @@ class PairingViewModel(
     /** 点选一台扫描到的服务端：只填地址，配对码仍需用户在 PC 页面上读。 */
     fun useDiscovered(server: DiscoveredServer) {
         address = server.baseUrl
-        _feedback.value = Feedback("已填入「${server.name}」的地址，输入配对码即可配对", isError = false)
+        // 发现应答没有指纹（UDP 是可伪造信道，指纹不能从那里来）：
+        // 这条路走 TOFU 信任边界，扫码才是带强校验的路径，提示里说清楚
+        scannedFingerprint = null
+        _feedback.value = Feedback(
+            "已填入「${server.name}」的地址，输入配对码即可配对（扫码配对可获得加密校验）",
+            isError = false,
+        )
     }
 
     /**
      * 处理扫码结果。
      *
-     * 二维码内容形如 `http://192.168.1.100:8787/#pair=123456`，
-     * 一次把地址与配对码都填好，用户只需点「配对」。
+     * 二维码内容形如 `https://192.168.1.100:8787/#pair=123456&fp=<指纹>`，
+     * 一次把地址、配对码与 TLS 指纹都填好，用户只需点「配对」。
      */
     fun applyScanned(content: String) {
         val normalized = ConnectionStore.normalizeBaseUrl(content)
         val scannedCode = ConnectionStore.extractPairingCode(content)
+        val fingerprint = ConnectionStore.extractPairingFingerprint(content)
 
         if (normalized.isNotEmpty()) address = normalized
         if (scannedCode != null) code = scannedCode
+        scannedFingerprint = fingerprint
 
         _feedback.value = when {
             normalized.isEmpty() -> Feedback("二维码里没有可用的服务器地址", isError = true)

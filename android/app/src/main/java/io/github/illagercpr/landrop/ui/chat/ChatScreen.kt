@@ -413,6 +413,8 @@ private fun statusLine(state: SocketState, sync: SyncState, onlineCount: Int): S
     state == SocketState.RECONNECTING -> "连接断开，正在重连…"
     // 服务端明确拒绝了凭据，重试没有意义；把出路直接告诉用户
     state == SocketState.CREDENTIALS_INVALID -> "配对已失效，请在「更多」里解除配对后重新配对"
+    // 服务端升级启用了 TLS，老凭据没有指纹；指纹只能来自重新扫码，重试没有意义
+    state == SocketState.TLS_UNTRUSTED -> "服务端已启用加密传输，请解除配对后重新扫码配对"
     sync is SyncState.Failed -> sync.message
     else -> "未连接"
 }

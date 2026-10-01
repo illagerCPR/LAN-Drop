@@ -68,4 +68,19 @@ class ServerDiscoveryTest {
             ),
         )
     }
+
+    @Test
+    fun `tls 位解析：新服务端为 true，老服务端缺字段默认 false（向前兼容）`() {
+        val tls = parseAnnounce(
+            ProtocolJson,
+            """{"service":"lan-drop","v":1,"id":"abc","name":"x","port":8787,"tls":true}""",
+        )
+        val plain = parseAnnounce(
+            ProtocolJson,
+            """{"service":"lan-drop","v":1,"id":"abc","name":"x","port":8787}""",
+        )
+
+        assertEquals(true, tls!!.tls)
+        assertEquals(false, plain!!.tls)
+    }
 }

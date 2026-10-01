@@ -37,6 +37,44 @@ class ProtocolJsonTest {
     }
 
     @Test
+    fun `info 携带 TLS 指纹，老服务端缺字段时默认 null`() {
+        val tlsInfo = ProtocolJson.decodeFromString(
+            ServerInfoDto.serializer(),
+            """{"protocolVersion":1,"serverId":"sid","serverName":"LAN-Drop","tls":true,
+               "tlsFingerprint":"UqhHXFAcag6e8JWlDXZ48gEOFVsOG7zlz1N4inqWM6I","pairingRequired":true}""",
+        )
+        val plainInfo = ProtocolJson.decodeFromString(
+            ServerInfoDto.serializer(),
+            """{"protocolVersion":1,"serverId":"sid","serverName":"LAN-Drop","tls":false,"pairingRequired":true}""",
+        )
+
+        assertEquals("UqhHXFAcag6e8JWlDXZ48gEOFVsOG7zlz1N4inqWM6I", tlsInfo.tlsFingerprint)
+        assertNull(plainInfo.tlsFingerprint)
+    }
+
+    @Test
+    fun `配对响应的指纹字段名与服务端约定一致，null 时省略键`() {
+        val withFp = ProtocolJson.encodeToString(
+            PairResponseDto.serializer(),
+            PairResponseDto(
+                deviceId = "d1",
+                deviceToken = "tok",
+                serverId = "sid",
+                serverName = "LAN-Drop",
+                tlsFingerprint = "UqhHXFAcag6e8JWlDXZ48gEOFVsOG7zlz1N4inqWM6I",
+            ),
+        )
+        val withoutFp = ProtocolJson.encodeToString(
+            PairResponseDto.serializer(),
+            PairResponseDto(deviceId = "d1", deviceToken = "tok", serverId = "sid", serverName = "LAN-Drop"),
+        )
+
+        // explicitNulls=false：明文服务端的配对响应不能出现 "tlsFingerprint":null
+        assertTrue(withFp.contains("\"tlsFingerprint\":\"UqhHXFAcag6e8JWlDXZ48gEOFVsOG7zlz1N4inqWM6I\""))
+        assertTrue(!withoutFp.contains("tlsFingerprint"))
+    }
+
+    @Test
     fun `解析增量消息页，区分 text 与 link 枚举`() {
         val page = ProtocolJson.decodeFromString(
             MessagePageDto.serializer(),

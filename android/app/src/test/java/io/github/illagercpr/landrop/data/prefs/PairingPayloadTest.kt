@@ -54,4 +54,44 @@ class PairingPayloadTest {
         assertEquals("", ConnectionStore.normalizeBaseUrl(""))
         assertEquals("", ConnectionStore.normalizeBaseUrl("   "))
     }
+
+    // ------------------------------------------------------------------ TLS 指纹（#fp=）
+
+    @Test
+    fun `TLS 配对 URL 解出 https 地址、配对码与指纹`() {
+        val fp = "UqhHXFAcag6e8JWlDXZ48gEOFVsOG7zlz1N4inqWM6I"
+        val url = "https://192.168.1.5:8787/#pair=7F3K9Q&fp=$fp"
+
+        assertEquals("https://192.168.1.5:8787", ConnectionStore.normalizeBaseUrl(url))
+        // 配对码在 & 处截断，不会被指纹污染
+        assertEquals("7F3K9Q", ConnectionStore.extractPairingCode(url))
+        assertEquals(fp, ConnectionStore.extractPairingFingerprint(url))
+    }
+
+    @Test
+    fun `没有 fp 参数的 URL 返回 null 指纹（明文服务端）`() {
+        assertNull(ConnectionStore.extractPairingFingerprint("http://192.168.1.5:8787/#pair=7F3K9Q"))
+        assertNull(ConnectionStore.extractPairingFingerprint("https://192.168.1.5:8787/#pair=7F3K9Q&x=1"))
+    }
+
+    @Test
+    fun `长度不是 43 的指纹一律不采信`() {
+        // sha256 base64url 无填充恒为 43 字符；别的形态只可能是篡改或损坏
+        assertNull(
+            ConnectionStore.extractPairingFingerprint(
+                "https://192.168.1.5:8787/#pair=7F3K9Q&fp=shortfp",
+            ),
+        )
+        assertNull(
+            ConnectionStore.extractPairingFingerprint(
+                "https://192.168.1.5:8787/#pair=7F3K9Q&fp=UqhHXFAcag6e8JWlDXZ48gEOFVsOG7zlz1N4inqWM6IEXTRA",
+            ),
+        )
+    }
+
+    @Test
+    fun `明文地址输入不会被误判成 TLS`() {
+        val url = "http://192.168.1.5:8787/#pair=7F3K9Q"
+        assertEquals("http://192.168.1.5:8787", ConnectionStore.normalizeBaseUrl(url))
+    }
 }

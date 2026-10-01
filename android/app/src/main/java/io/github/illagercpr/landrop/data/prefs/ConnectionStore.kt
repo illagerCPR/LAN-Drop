@@ -12,6 +12,10 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * [baseUrl] 是归一化后的形态（形如 `http://192.168.1.100:8787`，无尾斜杠），
  * 拼接路径时直接用字符串相加即可。
+ *
+ * [tlsFingerprint] 是服务端证书的 SPKI sha256（base64url 无填充）：非 null 时
+ * 所有 TLS 连接都按它固定校验（SSH TOFU 模型）；null 表示明文服务端或升级前
+ * 配对的老凭据——后者连上启用 TLS 的服务端会进「请重新配对」状态。
  */
 data class Connection(
     val baseUrl: String,
@@ -19,6 +23,7 @@ data class Connection(
     val deviceToken: String,
     val serverId: String,
     val serverName: String,
+    val tlsFingerprint: String? = null,
 )
 
 /**
@@ -69,6 +74,11 @@ class ConnectionStore(context: Context) {
             putString(KEY_DEVICE_TOKEN, connection.deviceToken)
             putString(KEY_SERVER_ID, connection.serverId)
             putString(KEY_SERVER_NAME, connection.serverName)
+            if (connection.tlsFingerprint != null) {
+                putString(KEY_TLS_FINGERPRINT, connection.tlsFingerprint)
+            } else {
+                remove(KEY_TLS_FINGERPRINT)
+            }
         }
         _connection.value = connection
     }
@@ -120,6 +130,7 @@ class ConnectionStore(context: Context) {
             deviceToken = token,
             serverId = prefs.getString(KEY_SERVER_ID, null).orEmpty(),
             serverName = prefs.getString(KEY_SERVER_NAME, null).orEmpty(),
+            tlsFingerprint = prefs.getString(KEY_TLS_FINGERPRINT, null)?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -131,6 +142,7 @@ class ConnectionStore(context: Context) {
         private const val KEY_SERVER_ID = "serverId"
         private const val KEY_SERVER_NAME = "serverName"
         private const val KEY_DEVICE_NAME = "deviceName"
+        private const val KEY_TLS_FINGERPRINT = "tlsFingerprint"
 
         /** 服务端默认端口，与 `apps/server/src/config.ts` 保持一致。 */
         const val DEFAULT_PORT = 8787
@@ -173,6 +185,23 @@ class ConnectionStore(context: Context) {
             return scanned.substring(index + marker.length)
                 .takeWhile { it.isLetterOrDigit() || it == '-' || it == '_' }
                 .takeIf { it.isNotEmpty() }
+        }
+
+        /**
+         * 从扫码内容里摘出 TLS 指纹（`#fp=<base64url sha256>`）。
+         *
+         * 指纹随二维码走（相机是攻击者插不进的视觉信道），配对时与服务端自报的
+         * 指纹核对一致才固化——不符即中间人，立即中止。没有 fp 参数返回 null
+         * （老服务端二维码 / 手输地址路径走 TOFU 信任边界）。
+         */
+        fun extractPairingFingerprint(scanned: String): String? {
+            val marker = "fp="
+            val index = scanned.indexOf(marker)
+            if (index < 0) return null
+            val value = scanned.substring(index + marker.length)
+                .takeWhile { it.isLetterOrDigit() || it == '-' || it == '_' }
+            // sha256 base64url 无填充恒为 43 字符；其余形态一律不采信
+            return value.takeIf { it.length == 43 }
         }
     }
 }
