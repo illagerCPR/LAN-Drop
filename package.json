@@ -13,6 +13,7 @@
     "start": "pnpm --filter @lan-drop/server start",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "verify": "node scripts/verify-all.mjs",
     "web:dev": "pnpm --filter @lan-drop/web dev",
     "web:build": "pnpm --filter @lan-drop/web build",
     "desktop:resources": "node apps/desktop/scripts/prepare-resources.mjs",

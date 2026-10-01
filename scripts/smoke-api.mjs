@@ -7,8 +7,9 @@
  * 默认 baseUrl = http://127.0.0.1:8787
  *
  * 覆盖：元信息 → 配对 → 文字消息 → 增量拉取 → 分片上传（多片）→ 完整性校验
- *       → 完整下载 → Range 下载 → 断点续传（含中途断流的残字节）→ WebSocket
- *       实时通道 → 鉴权拒绝路径。
+ *       → 完整下载 → Range 下载 → 断点续传（含中途断流的残字节）→ 0 字节文件
+ *       → 并发同 offset 竞态 → 收尾时声明 sha256 → WebSocket 实时通道
+ *       → ?token= 作用域 → 设备撤销。
  * 脚本必须在本机运行（配对码接口只对回环地址开放）。
  */
 
@@ -389,6 +390,47 @@ async function main() {
   const fileNoAuth = await fetch(`${baseUrl}/api/v1/files/${fileId}`);
   check(fileNoAuth.status === 401, "未授权下载文件被拒绝", `status=${fileNoAuth.status}`);
 
+  // ---------------------------------------------------------------- 5b. 0 字节文件
+  //
+  // 空文件没有任何分片可发：会话创建即应落一个空临时文件，否则 complete 会在
+  // sha256File 的 ENOENT 上炸成 500（实测踩过）。这一节曾经整个是红的。
+  console.log("\n[5b] 0 字节文件（空文件上传）");
+  const emptyCreate = await json("POST", "/api/v1/uploads", {
+    token,
+    body: { name: "空文件.txt", size: 0, mime: "text/plain" },
+  });
+  check(emptyCreate.status === 200, "创建 0 字节上传会话", `status=${emptyCreate.status}`);
+  const emptyId = emptyCreate.body?.uploadId;
+
+  const emptyStatus = await json("GET", `/api/v1/uploads/${emptyId}`, { token });
+  check(emptyStatus.body?.resumable === false, "0 字节会话无可续传余量");
+
+  const emptyComplete = await json("POST", `/api/v1/uploads/${emptyId}/complete`, { token });
+  check(
+    emptyComplete.status === 200,
+    "0 字节上传可直接收尾（不 500）",
+    `status=${emptyComplete.status} ${emptyComplete.status !== 200 ? JSON.stringify(emptyComplete.body ?? {}) : ""}`,
+  );
+
+  if (emptyComplete.status === 200) {
+    const emptyDownload = await fetch(
+      `${baseUrl}/api/v1/files/${emptyComplete.body.file.id}?token=${encodeURIComponent(token)}`,
+    );
+    const emptyBytes = Buffer.from(await emptyDownload.arrayBuffer());
+    check(
+      emptyDownload.status === 200 && emptyBytes.length === 0,
+      "0 字节文件可下载且长度为 0",
+      `status=${emptyDownload.status} bytes=${emptyBytes.length}`,
+    );
+    check(
+      emptyComplete.body?.file?.sha256 === sha256(Buffer.alloc(0)),
+      "空文件的 sha256 与空串摘要一致",
+    );
+  } else {
+    // 清场：失败路径下会话还开着，别把临时文件留给清理定时器
+    await json("DELETE", `/api/v1/uploads/${emptyId}`, { token });
+  }
+
   // ---------------------------------------------------------------- 6. 断点续传
   console.log("\n[6] 断点续传（暂停 / 恢复 / 断流残字节）");
 
@@ -491,6 +533,119 @@ async function main() {
   const uploadMissing = await json("GET", "/api/v1/uploads/does-not-exist", { token });
   check(uploadMissing.status === 404, "查询不存在的会话返回 404", `status=${uploadMissing.status}`);
 
+  // ---------------------------------------------------------------- 6b. 并发同 offset
+  //
+  // 「追加写」的对齐语义必须由服务端强制：两个分片同时以同一个 offset 到达时，
+  // 若没有写入互斥，两个请求都会读到同一个 received_bytes 并双双通过校验，
+  // 各自追加一份字节（实测确认过：receivedBytes 冲到 16，文件从此错位）。
+  console.log("\n[6b] 并发同 offset 分片（服务端写入互斥）");
+  const concPayloadA = randomBytes(8);
+  const concPayloadB = randomBytes(8);
+  const concCreate = await json("POST", "/api/v1/uploads", {
+    token,
+    body: { name: "并发竞态.bin", size: concPayloadA.length, mime: "application/octet-stream" },
+  });
+  const concId = concCreate.body?.uploadId;
+  const concResults = await Promise.all(
+    [concPayloadA, concPayloadB].map((payload) =>
+      fetch(`${baseUrl}/api/v1/uploads/${concId}?offset=0`, {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+        body: payload,
+      }).then(async (response) => ({
+        status: response.status,
+        body: await response.json().catch(() => null),
+      })),
+    ),
+  );
+  const acceptedChunks = concResults.filter((result) => result.status === 200);
+  const rejectedChunks = concResults.filter((result) => result.status !== 200);
+  check(
+    acceptedChunks.length === 1,
+    "并发同 offset：只有一个分片被接受",
+    `statuses=${concResults.map((result) => result.status).join(",")}`,
+  );
+  check(rejectedChunks.every((result) => result.status === 409), "被拒分片回 409（对齐或写入中）");
+  check(
+    rejectedChunks.every((result) => typeof result.body?.receivedBytes === "number"),
+    "409 响应携带权威进度供客户端对齐",
+  );
+
+  const concStatus = await json("GET", `/api/v1/uploads/${concId}`, { token });
+  check(
+    concStatus.body?.receivedBytes === concPayloadA.length,
+    "进度恰好前进了声明的字节数（不双写）",
+    `receivedBytes=${concStatus.body?.receivedBytes}`,
+  );
+
+  const concComplete = await json("POST", `/api/v1/uploads/${concId}/complete`, { token });
+  check(concComplete.status === 200, "竞态会话可正常收尾", `status=${concComplete.status}`);
+  if (concComplete.status === 200) {
+    const concDownload = await fetch(
+      `${baseUrl}/api/v1/files/${concComplete.body.file.id}?token=${encodeURIComponent(token)}`,
+    );
+    const concBytes = Buffer.from(await concDownload.arrayBuffer());
+    const winner = [concPayloadA, concPayloadB].find((payload) => payload.equals(concBytes));
+    check(winner !== undefined, "落盘内容是两个分片之一的原样字节（无交错损坏）");
+  } else {
+    await json("DELETE", `/api/v1/uploads/${concId}`, { token });
+  }
+
+  // ---------------------------------------------------------------- 6c. 收尾时声明 sha256
+  //
+  // 分片不声明摘要的客户端（今天的全部客户端）让完整性校验形同虚设。
+  // 服务端要在 complete 时接受客户端自证的摘要：不符 → 422 且会话中止。
+  console.log("\n[6c] 收尾时声明 sha256（客户端完整性自证）");
+  const digestPayload = randomBytes(2048);
+  const wrongCreate = await json("POST", "/api/v1/uploads", {
+    token,
+    body: { name: "收尾摘要-错.bin", size: digestPayload.length, mime: "application/octet-stream" },
+  });
+  const wrongId = wrongCreate.body?.uploadId;
+  const wrongPatch = await fetch(`${baseUrl}/api/v1/uploads/${wrongId}?offset=0`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+    body: digestPayload,
+  });
+  check(wrongPatch.status === 200, "上传待校验分片", `status=${wrongPatch.status}`);
+
+  const malformed = await json("POST", `/api/v1/uploads/${wrongId}/complete`, {
+    token,
+    body: { sha256: "not-a-digest" },
+  });
+  check(malformed.status === 400, "摘要格式非法 → 400", `status=${malformed.status}`);
+
+  const wrongDigest = await json("POST", `/api/v1/uploads/${wrongId}/complete`, {
+    token,
+    body: { sha256: "0".repeat(64) },
+  });
+  check(wrongDigest.status === 422, "收尾摘要不符 → 422 拒绝入库", `status=${wrongDigest.status}`);
+  const wrongStatus = await json("GET", `/api/v1/uploads/${wrongId}`, { token });
+  check(
+    wrongStatus.body?.state === "aborted",
+    "摘要不符后会话被中止（错字节不落库）",
+    `state=${wrongStatus.body?.state}`,
+  );
+  if (wrongStatus.body?.state !== "aborted") {
+    await json("DELETE", `/api/v1/uploads/${wrongId}`, { token });
+  }
+
+  const goodCreate = await json("POST", "/api/v1/uploads", {
+    token,
+    body: { name: "收尾摘要-对.bin", size: digestPayload.length, mime: "application/octet-stream" },
+  });
+  const goodId = goodCreate.body?.uploadId;
+  await fetch(`${baseUrl}/api/v1/uploads/${goodId}?offset=0`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+    body: digestPayload,
+  });
+  const goodComplete = await json("POST", `/api/v1/uploads/${goodId}/complete`, {
+    token,
+    body: { sha256: sha256(digestPayload) },
+  });
+  check(goodComplete.status === 200, "收尾摘要一致 → 200", `status=${goodComplete.status}`);
+
   // ---------------------------------------------------------------- 7. WebSocket
   console.log("\n[7] WebSocket 实时通道");
   const wsBase = baseUrl.replace(/^http/, "ws");
@@ -531,6 +686,59 @@ async function main() {
   const broadcast = await socket.waitFor("message.new");
   check(broadcast?.payload?.text === wsMarker, "WS 收到 message.new 实时广播");
   socket.close();
+
+  // ---------------------------------------------------------------- 8. token 携带方式的作用域
+  //
+  // ?token= 会留在服务端日志、浏览器历史与各中间层，只对「带不了请求头的消费者」
+  // （<img>/<a> 下载、浏览器 WebSocket）放行；其余接口必须用 Authorization 头。
+  console.log("\n[8] ?token= 作用域（仅下载与 WebSocket）");
+  const queryOnMessages = await json(
+    "GET",
+    `/api/v1/messages?since=0&limit=1&token=${encodeURIComponent(token)}`,
+  );
+  check(
+    queryOnMessages.status === 401,
+    "消息接口不接受 ?token= 凭据（必须用请求头）",
+    `status=${queryOnMessages.status}`,
+  );
+  const headerOnMessages = await json("GET", "/api/v1/messages?since=0&limit=1", { token });
+  check(headerOnMessages.status === 200, "Authorization 头照常工作", `status=${headerOnMessages.status}`);
+  const queryOnDownload = await fetch(
+    `${baseUrl}/api/v1/files/${fileId}?token=${encodeURIComponent(token)}`,
+    { headers: { range: "bytes=0-0" } },
+  );
+  check(
+    queryOnDownload.status === 206,
+    "文件下载仍然接受 ?token=（<img>/<a> 的硬约束）",
+    `status=${queryOnDownload.status}`,
+  );
+
+  // ---------------------------------------------------------------- 9. 设备撤销
+  //
+  // 配对一次 = 永久全权访问，撤销是唯一的止损手段。这一节放在最后：
+  // 一旦执行，后续所有请求都会 401。
+  console.log("\n[9] 设备撤销");
+  const devicesNoAuth = await json("GET", "/api/v1/pair/devices");
+  check(devicesNoAuth.status === 401, "设备列表需要鉴权", `status=${devicesNoAuth.status}`);
+
+  const devicesRes = await json("GET", "/api/v1/pair/devices", { token });
+  check(devicesRes.status === 200, "列出已配对设备", `status=${devicesRes.status}`);
+  const selfEntry = devicesRes.body?.items?.find((device) => device.name === "冒烟测试设备");
+  check(selfEntry !== undefined, "设备列表包含本测试设备");
+  check(typeof selfEntry?.online === "boolean", "设备条目携带在线状态");
+
+  const revoke = await json("DELETE", `/api/v1/pair/devices/${selfEntry?.id}`, { token });
+  check(revoke.status === 200, "撤销设备", `status=${revoke.status} ${JSON.stringify(revoke.body ?? {})}`);
+
+  const afterRevoke = await json("GET", "/api/v1/messages?since=0&limit=1", { token });
+  check(afterRevoke.status === 401, "撤销后旧 token 立即失效", `status=${afterRevoke.status}`);
+
+  const revokeAgain = await json("DELETE", `/api/v1/pair/devices/${selfEntry?.id}`, { token });
+  check(
+    revokeAgain.status === 401,
+    "撤销接口本身也拒绝已失效的 token",
+    `status=${revokeAgain.status}`,
+  );
 
   // ---------------------------------------------------------------- 汇总
   console.log(`\n${"─".repeat(52)}`);
