@@ -52,6 +52,12 @@ async function gitShortSha() {
   return (result.stdout ?? "").trim() || "unknown";
 }
 
+/** bundle banner 里的版本号取自服务端 package.json —— 别再写死（曾长期印着 0.1.0）。 */
+async function serverVersion() {
+  const manifest = JSON.parse(await readFile(join(repoRoot, "apps/server/package.json"), "utf8"));
+  return manifest.version;
+}
+
 /** 与 scripts/package.mjs（已随便携包放弃删除）同一套判定：metafile 查真实模块图。 */
 function assertSelfContained(metafile) {
   const key = Object.keys(metafile.outputs).find((candidate) => candidate.endsWith("server/server.js"));
@@ -224,7 +230,7 @@ async function placeSidecarNode() {
 const commit = await gitShortSha();
 await rm(resourcesDir, { recursive: true, force: true });
 await mkdir(join(resourcesDir, "server"), { recursive: true });
-await bundleServer("0.1.0", commit);
+await bundleServer(await serverVersion(), commit);
 await copyWebDist();
 await placeSidecarNode();
 log("完成：src-tauri/{resources,binaries} 已就绪");
