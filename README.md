@@ -71,6 +71,36 @@ currentUser 的默认安装目录同样是 `%LOCALAPPDATA%\LAN-Drop`，数据根
 `~/.local/share/io.github.illagercpr.landrop.desktop/logs/`。磁盘占用默认**永久保留**，
 要限制请看下文「消息保留策略（P4-5）」的双阈值环境变量。
 
+## 安全与威胁模型
+
+把话说在明处：LAN-Drop 是**可信局域网内的效率工具**，不是对抗性场景下的安全通信软件。
+
+- **传输全程明文 HTTP/WS**：文件字节、文字消息、凭据（Authorization 头）都不加密。
+  同网段的监听者可以看到全部内容。这是首版刻意的取舍——自签 TLS 对手机端意味着
+  证书告警或手工装根证书，体验代价大于收益（决策记录 #3：列为可选增强）。
+- **威胁对象是「同网段的陌生设备」**：防御手段是配对码（约 30 bit 熵、10 分钟有效、
+  用一次即换，且只有服务端宿主本机能读到它）。攻击面成立的前提是攻击者与你在
+  同一个局域网且恰好在配对码有效的窗口内。
+- **配对成功 = 共享房间**：房间内没有权限分级，任何已配对设备可以读写全部消息、
+  上传任意大小的文件、下载全部文件。LAN-Drop 假设房间里的设备都属于你（或你信任的人）。
+- **设备令牌不过期，但可撤销**：token 长期有效是便利性取舍；止损手段是 Web 控制台的
+  「设备管理」（见下节）。服务端日志已把查询串里的 token 脱敏（`token=[REDACTED]`）。
+- **`?token=` 查询参数凭据是已知残留**：浏览器的 `<img>`/`<a>` 与 WebSocket 带不了
+  自定义请求头，只能把 token 放进 URL。服务端把它收窄到**文件下载与 WS 握手**两条路
+  （其余接口一律要求 Authorization 头），但它仍会留在浏览器历史与下载记录里。介意的话
+  用应用内上传/下载（Android 客户端全部走请求头）。
+- **服务端主动拒绝公网**：默认 `LAN_DROP_PRIVATE_ONLY=1`，非私有网段来源的请求一律 403。
+
+## 设备管理：撤销与重新配对
+
+Web 控制台右上角「设备管理」：列出全部已配对设备（平台、在线状态、最近活跃），
+可逐台**撤销**。撤销 = 删设备行（token 哈希随行而去，全部凭据立即失效）+ 回收该设备
+的上传会话与临时分片 + 踢下线（WS 4401，客户端停止重连并提示重新配对）。
+
+- 只有**服务端宿主**（回环地址）能撤销：PC 控制台是管理入口，已配对设备之间无权互相踢。
+- 消息记录保留：发送者名字是随消息存的，撤销设备不影响历史展示。
+- 撤销手机后重新使用：手机端会显示「凭据失效」，按提示在服务端重新配对即可。
+
 ## 目录结构
 
 ```
@@ -124,9 +154,9 @@ pnpm web:build      # 开发热更可用 pnpm web:dev（Vite 代理 /api 到 878
 # 6) 构建 Android 调试包（产物：android/app/build/outputs/apk/debug/app-debug.apk）
 cd android && ./gradlew :app:assembleDebug
 
-# 7) 跑单测
-cd android && ./gradlew :app:testDebugUnitTest   # Android：107 项 JVM 单测，无需设备/服务端
-pnpm -r test                                     # TS 侧：34 项（node --test 直接跑 .ts）
+# 7) 跑验证
+pnpm verify                                      # 一键门禁：TS 类型 + 单测 + 自起服务端跑全量冒烟
+cd android && ./gradlew :app:testDebugUnitTest   # Android：109 项 JVM 单测，无需设备/服务端
 
 # 8) 无线调试部署（手机：开发者选项 → 无线调试）
 adb pair <手机IP>:<配对端口> <6 位配对码>
@@ -134,7 +164,8 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 # 9) 桌面端（Tauri；产物在 dist/：Windows NSIS 安装包 / Linux AppImage）
 pnpm desktop:resources      # esbuild 打服务端 bundle（metafile 自包含检查）+ 拷 web/dist + 按平台拉 sidecar node
-# Windows 侧：构建树复制到 C: 盘，Windows 本机 node 跑 @tauri-apps/cli build（NSIS）
+# Windows 侧：构建树在 E:\ClaudeCode\lan-drop-desktop-build（Windows 本地盘，勿放 WSL 路径），
+#             Windows 本机 node 跑 @tauri-apps/cli build（NSIS）
 # Linux 侧（WSL）：装 4 个系统包后 tauri build --bundles appimage
 # 详见下文「桌面端（Tauri 常驻壳）与部署」小节
 ```
@@ -154,7 +185,9 @@ KSP 2.3.12 / compileSdk 37 / minSdk 33），**改动前请先读
 - **P1** 服务端核心 + Web UI ✅（手机 ↔ PC 已实测互发文字与文件；大文件项以 ~180 MB 视频代替验收）
 - **P2** Android 原生客户端 MVP ✅（配对、时间线、文字、文件收发、Room 离线缓存）
 - **P3** 断点续传 ✅（暂停/继续/崩溃恢复）· 前台服务 + 通知 ✅（息屏续传）· UDP 自动发现 ✅（扫描配对 + 断线找回）· 自动接收文件 ✅（默认关）· 摄像头扫码 ✅ · 系统分享面板与缩略图移至 P4
-- **P4** 桌面常驻壳（Tauri 托盘 + Node sidecar）✅ · 系统分享面板 + 多选批量 ✅ · 时间线缩略图 ✅ · 传输暂停/继续 + 链接可点 ✅ · 消息保留策略 ✅ · 边界用例与可选 TLS
+- **P4** 桌面常驻壳（Tauri 托盘 + Node sidecar）✅ · 系统分享面板 + 多选批量 ✅ · 时间线缩略图 ✅ · 传输暂停/继续 + 链接可点 ✅ · 消息保留策略 ✅
+- **安全加固轮（2026-10-01）** 0 字节文件上传 ✅ · token 日志脱敏与查询凭据收窄 ✅ · 分片写入互斥 + 客户端收尾摘要自证 ✅ · 设备撤销（Web 面板）✅ · CI（GitHub Actions）✅
+- **可选增强（未排期）** 自签 TLS + 指纹固定 · 边界用例收尾（磁盘满）· Android 多服务端 · Web 无障碍 · LICENSE
 
 详见 [docs/技术选型与开发计划.md](docs/技术选型与开发计划.md)。
 
@@ -217,8 +250,8 @@ TS 侧另有 26 项单测：`pnpm -r test`（15 项链接规则 + 11 项上传�
 | 断线自动重连 | ✅ 服务端恢复后 3 秒内回到「在线」 |
 | 离线缺口补偿 | ✅ App 离线期间 PC 发的消息，重启后自动补齐 |
 
-`cd android && ./gradlew :app:testDebugUnitTest` 另有 107 项 JVM 单测（无需设备与服务端）：
-16 项协议一致性（拿服务端真实响应样本验证 Kotlin 侧模型，防两端协议漂移）+
+`cd android && ./gradlew :app:testDebugUnitTest` 另有 109 项 JVM 单测（无需设备与服务端）：
+18 项协议一致性（拿服务端真实响应样本验证 Kotlin 侧模型，防两端协议漂移）+
 6 项 WS 事件信封解析（`message.new` 真实样本、`message.deleted` / `messages.purged` 解析为对应事件，缺 payload、未知类型与坏 JSON 拒绝）+
 17 项通知逻辑（多任务进度合并、主动暂停与网络中断的提醒判据、速率平滑与回退重置）+
 6 项发现应答解析（非本服务 / 未来版本 / 坏报文一律拒绝）+

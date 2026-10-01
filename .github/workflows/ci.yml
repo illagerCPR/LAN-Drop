@@ -1,0 +1,68 @@
+name: CI
+
+# 三个 job，边界刻意分清：
+#   ts      —— TS 侧全链路门禁：类型 + 单测 + 自起服务端的端到端冒烟（pnpm verify）
+#   android —— Android JVM 单测（无需设备与服务端）；首期 continue-on-error，
+#              稳定后移除该开关收紧为门禁
+#   hygiene —— 仓库卫生：ps1 文件 BOM（PS 5.1 无 BOM 按 ANSI 解码会炸中文语法）、
+#              文档相对链接有效性
+#
+# 明确不做的：真机、Windows NSIS、AppImage、桌面壳构建（构建树在 Windows 本地盘，
+# 见 AGENTS.md；桌面产物依赖本机工具链，CI 化另行规划）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ts:
+    name: TypeScript（类型 + 单测 + 端到端冒烟）
+    runs-on: ubuntu-latest
+    env:
+      # 仓库 .npmrc 指向 npmmirror（本机镜像优化）；CI 走官方源，不受其影响
+      npm_config_registry: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # verify-all：类型检查 → 单测 → 自起服务端（8899/8898，临时数据根）→
+      # 全量冒烟 + 服务端日志 token 泄漏扫描，任一步失败即红
+      - run: pnpm verify
+
+  android:
+    name: Android JVM 单测
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # 接受 SDK 许可证后，AGP 在配置阶段自动补齐缺失的 platforms;android-37 等
+      - uses: android-actions/setup-android@v3
+      # Gradle 发行版走 wrapper 里已提交的腾讯云镜像（公开可达），依赖走 google()/
+      # 阿里云镜像（settings.gradle.kts 顶部注释），均不需要 GitHub 直链
+      - working-directory: android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+  hygiene:
+    name: 仓库卫生（BOM / 文档链接）
+    runs-on: ubuntu-latest
+    env:
+      npm_config_registry: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm fix:ps1-bom --check
+      - run: node scripts/check-doc-links.mjs
