@@ -35,6 +35,42 @@ Edge Drop 下线后，在自家局域网里「电脑 ↔ 手机」随手丢一�
 
 **分工原则**：控制面走 WebSocket，数据面走 HTTP。文件字节永不进 WS 通道，避免与聊天消息互相队头阻塞，同时白拿 HTTP 的 `Range` 断点续传与浏览器直下能力。
 
+## 服务端数据保存在哪里
+
+没有云、没有账号，所有数据只落在宿主 PC 的本地磁盘上。默认数据根：
+
+| 场景 | 路径 |
+| --- | --- |
+| Linux（源码 / AppImage / deb） | `~/.local/share/lan-drop`（跟随 `XDG_DATA_HOME`） |
+| Windows（源码 / 手动启动） | `%LOCALAPPDATA%\LAN-Drop` |
+| Windows 安装版（桌面壳） | `%LOCALAPPDATA%\LAN-Drop-Data` |
+
+任何一个都能用 `LAN_DROP_DATA_ROOT` 整体改根。Windows 安装版之所以要换地方：NSIS
+currentUser 的默认安装目录同样是 `%LOCALAPPDATA%\LAN-Drop`，数据根留在安装目录里的话，
+**卸载会连数据一起删掉**——所以由桌面壳注入该变量（用户显式设过则不覆盖）。
+
+数据根内部（改根则下面整体跟着走）：
+
+| 路径 | 内容 |
+| --- | --- |
+| `lan-drop.sqlite`（含 `-wal` / `-shm`） | 设备、消息、文件元数据、上传会话 |
+| `files/<年>/<月>/<fileId>_<文件名>` | 文件仓库本体；可用 `LAN_DROP_FILES_ROOT` 单独挪到别的盘 |
+| `tmp/<uuid>.part` | 未完成上传的临时分片；超过 24 小时没有新分片的会话会被置为已中止并删掉分片 |
+| `server.json` | 服务端身份 `serverId`，手机端的配对凭据与它绑定 |
+
+三件值得知道的事：
+
+- **备份 = 拷走整个数据根**，其中 `server.json` 必须一起拷且保持合法 JSON：丢了它服务端会生成
+  新的 `serverId`，所有已配对设备都得重新配对；它损坏则服务端直接启动失败（不会静默换 ID）。
+- **不要用 SQLite 命令行手工改库**：服务端进程持有 WAL 连接，手工写入会与它互相覆盖。
+- **手工清空 `files/` 的后果**：文件消息还在，但点下载会得到「文件已不在磁盘上」（410）而不是
+  404——这是刻意区分「记录指向的文件被外部删了」与「记录本身不存在」。
+
+另外，日志不在数据根里：桌面壳的 sidecar 日志在 Windows
+`%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\server-sidecar.log`、Linux
+`~/.local/share/io.github.illagercpr.landrop.desktop/logs/`。磁盘占用默认**永久保留**，
+要限制请看下文「消息保留策略（P4-5）」的双阈值环境变量。
+
 ## 目录结构
 
 ```
