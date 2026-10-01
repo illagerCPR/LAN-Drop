@@ -317,6 +317,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 - 通知按钮的 `PendingIntent` 相等性**不含 extra**，只按 requestCode + Intent 过滤等价部分比较；传输 ID 必须掺进 requestCode（见 `Notifications.serviceAction`），否则两条传输的按钮会互相覆盖。
 - `AppVisibility.foreground` 由 `MainActivity` 的 onStart/onStop 维护（单 Activity 应用刻意不引 `ProcessLifecycleOwner`），只用于「该不该发新消息通知」。
 - 进行中的进度通知会持续刷新 → SystemUI 进不了 idle → **`uiautomator dump` 报 `could not get idle state` 并失败**，必须重试（实测要 20 次）。且 dump 失败时**不会写文件**：脚本若失败后照旧 `cat` 远端路径，读到的是上一次的旧 dump，会得出完全错误的界面结论（`/tmp/uidump.sh` 的做法是先删远端文件、失败即退出）。
+- **`am kill` 杀不掉带前台服务的进程**（实测）：上传进行中 `TransferService` 是前台服务，进程不属于「后台进程」，`am kill` 无效、上传照跑（曾让一次「中途杀进程制造续传现场」的测试直接传完）。要杀就 `am force-stop <package>`——代价是 ACTION_SEND 的临时 URI 授权一并消失（源文件不可读 → 按设计判失败），所以「制造续传现场」必须走 SAF 持久授权的传输。
 - 前台服务 `android:exported="false"`，所以 `adb shell am startservice` 起不动它（`Requires permission not exported from uid`）——通知按钮只能靠真实点击验证；且「暂停」「取消」两键同排相邻（实测 x=178 与 x=311），**绝不能盲点或按估算坐标点**，点错就是删掉几百 MB 半成品。
 
 ## 约定
