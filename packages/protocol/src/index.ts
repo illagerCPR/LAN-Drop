@@ -208,6 +208,30 @@ export interface UploadListDto {
   items: UploadStatusDto[];
 }
 
+/** 已配对设备（`GET /pair/devices`）。 */
+export interface DeviceInfoDto {
+  id: string;
+  name: string;
+  platform: string;
+  /** Unix 毫秒 */
+  createdAt: number;
+  /** Unix 毫秒；从未连接过时为 null */
+  lastSeenAt: number | null;
+  /** 当前是否持有活跃 WebSocket 连接 */
+  online: boolean;
+}
+
+/** 设备列表（`GET /pair/devices`）。 */
+export interface DeviceListDto {
+  items: DeviceInfoDto[];
+}
+
+/** 撤销设备（`DELETE /pair/devices/:id`）的响应体。 */
+export interface DeviceRevokeResponse {
+  revoked: boolean;
+  deviceId: string;
+}
+
 /** 传输进度事件负载。 */
 export interface TransferProgressPayload {
   transferId: string;

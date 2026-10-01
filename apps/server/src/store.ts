@@ -192,6 +192,18 @@ export class Store {
     this.#stmt("UPDATE devices SET last_seen_at = ? WHERE id = ?").run(Date.now(), id);
   }
 
+  /**
+   * 撤销设备（删除行）。token 的 sha256 随行而去，该设备的全部凭据立即失效。
+   *
+   * 注意 uploads.device_id **没有外键**，删设备行不会级联也不会报错——该设备的
+   * 上传会话必须由调用方先回收（临时文件 + 会话行），否则留下指向已删除设备的
+   * 孤儿会话，24 小时后才会被清理定时器捞走。
+   */
+  deleteDevice(id: string): boolean {
+    const info = this.#stmt("DELETE FROM devices WHERE id = ?").run(id);
+    return toNumber(info.changes) > 0;
+  }
+
   // ------------------------------------------------------------ 消息
 
   /** 按 seq 回读单条完整消息（含文件信息）。 */
@@ -528,6 +540,12 @@ export class Store {
 
   deleteUpload(id: string): void {
     this.#stmt("DELETE FROM uploads WHERE id = ?").run(id);
+  }
+
+  /** 删除某设备的全部上传会话行（撤销设备时随行清理），返回删除数。 */
+  deleteUploadsByDevice(deviceId: string): number {
+    const info = this.#stmt("DELETE FROM uploads WHERE device_id = ?").run(deviceId);
+    return toNumber(info.changes);
   }
 
   // ------------------------------------------------------------ 元信息

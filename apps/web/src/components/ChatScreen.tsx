@@ -24,6 +24,7 @@ import {
 } from "../api.ts";
 import { Uploader, type UploadPhase, type UploadSnapshot } from "../upload.ts";
 import { LanDropSocket, type WsStatus } from "../ws.ts";
+import { DevicesPanel } from "./DevicesPanel.tsx";
 import { MessageList } from "./MessageList.tsx";
 
 const PAGE_SIZE = 1000;
@@ -64,6 +65,7 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [typingName, setTypingName] = useState<string | null>(null);
+  const [devicesOpen, setDevicesOpen] = useState(false);
 
   const seqRef = useRef(0);
   const socketRef = useRef<LanDropSocket | null>(null);
@@ -342,9 +344,14 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
             </div>
           </div>
         </div>
-        <button type="button" className="ghost" onClick={() => void handleClear()}>
-          清空记录
-        </button>
+        <div className="chat-header-actions">
+          <button type="button" className="ghost" onClick={() => setDevicesOpen(true)}>
+            设备管理
+          </button>
+          <button type="button" className="ghost" onClick={() => void handleClear()}>
+            清空记录
+          </button>
+        </div>
       </header>
 
       <div className="message-list" ref={listRef} onScroll={handleListScroll}>
@@ -376,6 +383,8 @@ export function ChatScreen(props: { info: ServerInfoDto }) {
           </button>
         </div>
       )}
+
+      {devicesOpen && <DevicesPanel onClose={() => setDevicesOpen(false)} />}
 
       <footer className="composer">
         <input

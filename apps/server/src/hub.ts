@@ -6,6 +6,8 @@ import type { DeviceRow } from "./types.ts";
 
 /** ws 的 readyState 常量（避开各版本 @types/ws 对实例属性声明不一致的问题）。 */
 const WS_READY_OPEN = 1;
+/** 自定义关闭码：鉴权失败（4000-4999 为应用保留区间）。 */
+const WS_CLOSE_UNAUTHORIZED = 4401;
 
 interface Client {
   socket: WebSocket;
@@ -65,5 +67,27 @@ export class Hub {
 
   onlineDeviceIds(): string[] {
     return [...this.#clients].map((client) => client.device.id);
+  }
+
+  /**
+   * 踢掉某设备的全部在线连接（撤销设备时用）。
+   *
+   * 以 4401 关闭——Android 端把它识别为「凭据失效」并停止重连、提示解除配对，
+   * 而不是进入无意义的无限重连。返回踢掉的连接数。
+   */
+  kickDevice(deviceId: string): number {
+    let kicked = 0;
+
+    for (const client of this.#clients) {
+      if (client.device.id !== deviceId) continue;
+      try {
+        client.socket.close(WS_CLOSE_UNAUTHORIZED, "device_revoked");
+        kicked += 1;
+      } catch {
+        // socket 已死就无需再踢；其 close 事件会负责摘除
+      }
+    }
+
+    return kicked;
   }
 }

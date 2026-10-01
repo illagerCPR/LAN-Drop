@@ -2,6 +2,8 @@ import {
   ApiPath,
   type CreateUploadRequest,
   type CreateUploadResponse,
+  type DeviceListDto,
+  type DeviceRevokeResponse,
   type MessageDto,
   type MessagePageDto,
   type PairRequest,
@@ -142,6 +144,23 @@ export function sendText(kind: "text" | "link", text: string): Promise<MessageDt
 /** 清空会话（仅本机可操作，服务端校验回环地址）。 */
 export function clearMessages(): Promise<{ removed: number }> {
   return request<{ removed: number }>(ApiPath.messages, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------- 设备管理
+
+/** 列出已配对设备（含在线状态）。 */
+export function listDevices(): Promise<DeviceListDto> {
+  return request<DeviceListDto>(`${ApiPath.pair}/devices`);
+}
+
+/**
+ * 撤销设备：删设备行（token 立即失效）+ 回收其上传会话 + 踢下线。
+ * 服务端仅允许宿主（回环地址）调用。
+ */
+export function revokeDevice(deviceId: string): Promise<DeviceRevokeResponse> {
+  return request<DeviceRevokeResponse>(`${ApiPath.pair}/devices/${deviceId}`, {
+    method: "DELETE",
+  });
 }
 
 // ---------------------------------------------------------------- 上传

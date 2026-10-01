@@ -2,6 +2,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import {
   ApiPath,
+  type DeviceInfoDto,
+  type DeviceListDto,
+  type DeviceRevokeResponse,
   type PairRequest,
   type PairResponse,
 } from "@lan-drop/protocol";
@@ -10,9 +13,13 @@ import { issueCredential, resolveDevice } from "../auth.ts";
 import type { AppContext } from "../context.ts";
 import { extractQueryToken } from "../dto.ts";
 import { isLoopback, lanAddresses } from "../net.ts";
+import { removeFileQuietly } from "../storage.ts";
 
 /** 设备名长度上限，避免被塞入超长字符串。 */
 const MAX_DEVICE_NAME = 64;
+
+/** 撤销设备时最多回收多少条 open 上传会话的临时文件。 */
+const MAX_REVOKE_UPLOADS = 1000;
 
 export interface AuthHookOptions {
   /**
@@ -138,15 +145,56 @@ export function registerPairRoutes(app: FastifyInstance, ctx: AppContext): void 
   // 在线设备列表（设置页展示用）
   app.get(`${ApiPath.pair}/devices`, { preHandler: createAuthHook(ctx) }, async () => {
     const online = new Set(ctx.hub.onlineDeviceIds());
-    return {
-      items: ctx.store.listDevices().map((device) => ({
-        id: device.id,
-        name: device.name,
-        platform: device.platform,
-        createdAt: device.createdAt,
-        lastSeenAt: device.lastSeenAt,
-        online: online.has(device.id),
-      })),
-    };
+    const items: DeviceInfoDto[] = ctx.store.listDevices().map((device) => ({
+      id: device.id,
+      name: device.name,
+      platform: device.platform,
+      createdAt: device.createdAt,
+      lastSeenAt: device.lastSeenAt,
+      online: online.has(device.id),
+    }));
+    return { items } satisfies DeviceListDto;
   });
+
+  // ---------------------------------------------------------------- 撤销设备
+  //
+  // 撤销是「配对即永久全权」模型的唯一止损手段：删设备行（token 哈希随行而去）
+  // + 回收该设备的上传会话 + 踢下线（4401，客户端据此进入凭据失效态）。
+  //
+  // 两道门槛缺一不可：先鉴权（凭据有效才谈得上管理），再仅限回环（撤销是宿主侧
+  // 的管理动作，共享房间模型里任何已配对设备都不该有权踢别人——被攻陷的设备
+  // 不能反过来清场）。消息记录刻意保留：sender_name 是反范式存储的，删除设备
+  // 不影响历史展示。
+  app.delete<{ Params: { id: string } }>(
+    `${ApiPath.pair}/devices/:id`,
+    { preHandler: createAuthHook(ctx) },
+    async (request, reply) => {
+      if (denyNonLoopback(request, reply)) return reply;
+
+      const id = request.params.id;
+      const device = ctx.store.findDeviceById(id);
+      if (!device) {
+        return reply.code(404).send({ error: "device_not_found" });
+      }
+
+      // 先回收上传会话再删设备行：临时分片只对 open 会话存在，
+      // 会话行必须手动删（uploads.device_id 无外键，不会级联）
+      const openUploads = ctx.store.listUploadsByDevice(id, "open", MAX_REVOKE_UPLOADS);
+      for (const upload of openUploads) {
+        await removeFileQuietly(upload.tempPath);
+      }
+      const removedUploads = ctx.store.deleteUploadsByDevice(id);
+
+      ctx.store.deleteDevice(id);
+      const kicked = ctx.hub.kickDevice(id);
+
+      app.log.info(
+        { device: device.name, uploads: removedUploads, kicked, by: request.device!.name },
+        "设备已撤销",
+      );
+
+      const response: DeviceRevokeResponse = { revoked: true, deviceId: id };
+      return response;
+    },
+  );
 }
