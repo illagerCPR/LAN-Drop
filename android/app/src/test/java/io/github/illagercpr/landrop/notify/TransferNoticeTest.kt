@@ -232,6 +232,7 @@ class TransferNoticeTest {
             id = id,
             messageId = "",
             direction = direction,
+            serverId = "server-1",
             fileName = name,
             totalBytes = total,
             transferredBytes = done,

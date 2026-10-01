@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 已配对服务器的连接信息。
+ * 一台已配对服务器的连接信息。
  *
  * [baseUrl] 是归一化后的形态（形如 `http://192.168.1.100:8787`，无尾斜杠），
  * 拼接路径时直接用字符串相加即可。
@@ -27,34 +27,46 @@ data class Connection(
 )
 
 /**
- * 连接凭据与服务器地址的本地存储。
+ * 连接凭据与服务器地址的本地存储——**多服务端**。
+ *
+ * 每台服务端一组凭据（按 serverId 存一行），另有一个「当前服务端」指针。
+ * 消息缓存与传输记录在 Room 里按 serverId 隔离，切换服务端不清缓存、
+ * 不重配对；凭据只对各自的服务端有效，泄露面没有变大。
  *
  * 用 SharedPreferences 而非 DataStore：数据量极小、需要同步读取
  * （OkHttp 拦截器取 token 是同步路径），且首版不加密——token 只对这一台
  * 局域网服务端有效，泄露面有限，服务端删除设备行即可撤销。
+ *
+ * 0.1.x 的单服务端格式在首次读取时自动迁移（旧键 → `server.<id>.*`）。
  */
 class ConnectionStore(context: Context) {
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private val _connection = MutableStateFlow(read())
+    private val _connections = MutableStateFlow(readAll())
+    private val _activeServerId = MutableStateFlow(readActiveServerId())
+    private val _connection = MutableStateFlow(activeConnection())
 
     /** 当前连接；未配对时为 null，界面据此在配对页与聊天页之间切换。 */
     val connection: StateFlow<Connection?> = _connection.asStateFlow()
 
+    /** 已保存的全部服务端（最近使用的在前），供服务端切换器展示。 */
+    val connections: StateFlow<List<Connection>> = _connections.asStateFlow()
+
+    /** 当前活动服务端 ID；未配对时为空。 */
+    val activeServerId: String
+        get() = _activeServerId.value.orEmpty()
+
     /** 上一次使用的服务器地址，配对页预填，省得每次重敲。 */
     val lastBaseUrl: String
-        get() = prefs.getString(KEY_BASE_URL, null).orEmpty()
+        get() = prefs.getString(KEY_LAST_BASE_URL, null).orEmpty()
 
     /**
-     * 最近一次配对的服务器 ID。
-     *
-     * 解除配对后依然保留：消息缓存的增量游标（本地最大 `seq`）只对同一台服务端有效，
-     * 换一台服务端必须清缓存，否则新服务端 seq 从 1 开始会被旧游标整段跳过。
+     * 当前服务端 ID（= [activeServerId] 的旧名，保留既有调用点语义）。
      */
     val lastServerId: String
-        get() = prefs.getString(KEY_SERVER_ID, null).orEmpty()
+        get() = activeServerId
 
     /**
      * 本机设备名：配对时上报服务端，也是聊天里显示的名字。
@@ -67,27 +79,50 @@ class ConnectionStore(context: Context) {
             prefs.edit { putString(KEY_DEVICE_NAME, value.trim()) }
         }
 
+    /**
+     * 保存（新增或更新）一台服务端的凭据，并把它设为当前服务端。
+     *
+     * 更新已有条目（改名、换 IP、刷新指纹）不会动排序；新条目排到最前。
+     */
     fun save(connection: Connection) {
-        prefs.edit {
-            putString(KEY_BASE_URL, connection.baseUrl)
-            putString(KEY_DEVICE_ID, connection.deviceId)
-            putString(KEY_DEVICE_TOKEN, connection.deviceToken)
-            putString(KEY_SERVER_ID, connection.serverId)
-            putString(KEY_SERVER_NAME, connection.serverName)
-            if (connection.tlsFingerprint != null) {
-                putString(KEY_TLS_FINGERPRINT, connection.tlsFingerprint)
-            } else {
-                remove(KEY_TLS_FINGERPRINT)
-            }
+        val existing = _connections.value.filterNot { it.serverId == connection.serverId }
+        val knownBefore = existing.size < _connections.value.size
+        val next = if (knownBefore) {
+            // 已有条目保持原位（不因改名跳位）
+            val index = _connections.value.indexOfFirst { it.serverId == connection.serverId }
+            _connections.value.toMutableList().also { it[index] = connection }
+        } else {
+            listOf(connection) + existing
         }
-        _connection.value = connection
+        writeAll(next, connection.serverId)
     }
 
-    /** 服务端改名后同步本地显示，不重新配对。 */
-    fun updateServerName(name: String) {
-        val current = _connection.value ?: return
-        prefs.edit { putString(KEY_SERVER_NAME, name) }
-        _connection.value = current.copy(serverName = name)
+    /** 切换当前服务端；凭据、缓存都不动，连接与时间线由各 StateFlow 自然跟上。 */
+    fun switchTo(serverId: String): Boolean {
+        if (_connections.value.none { it.serverId == serverId }) return false
+        if (_activeServerId.value == serverId) return true
+        writeAll(_connections.value, serverId)
+        return true
+    }
+
+    /**
+     * 解除一台服务端的配对：删除凭据行。删的是当前服务端时连接变为 null，
+     * 界面回到配对页。消息缓存刻意保留（纯缓存行，无法再被看到也不碍事，
+     * 重新配对同一台服务端后立即恢复显示）。
+     */
+    fun remove(serverId: String) {
+        val remaining = _connections.value.filterNot { it.serverId == serverId }
+        val removed = _connections.value.firstOrNull { it.serverId == serverId }
+        // 保留地址给配对页预填：删错了还想加回来是高频动作
+        if (removed != null) {
+            prefs.edit { putString(KEY_LAST_BASE_URL, removed.baseUrl) }
+        }
+        val nextActive = when {
+            _activeServerId.value != serverId -> _activeServerId.value
+            remaining.isNotEmpty() -> remaining.first().serverId
+            else -> null
+        }
+        writeAll(remaining, nextActive)
     }
 
     /**
@@ -98,51 +133,169 @@ class ConnectionStore(context: Context) {
      */
     fun updateBaseUrl(baseUrl: String) {
         val current = _connection.value ?: return
-        prefs.edit { putString(KEY_BASE_URL, baseUrl) }
-        _connection.value = current.copy(baseUrl = baseUrl)
+        updateEntry(current.copy(baseUrl = baseUrl))
     }
+
+    /** 服务端改名后同步本地显示，不重新配对。 */
+    fun updateServerName(name: String) {
+        val current = _connection.value ?: return
+        updateEntry(current.copy(serverName = name))
+    }
+
+    /** 按 serverId 找连接（传输恢复用：任务属于哪台服务端就连哪台）。 */
+    fun byServerId(serverId: String): Connection? =
+        _connections.value.firstOrNull { it.serverId == serverId }
 
     /**
-     * 解除配对：清空凭据（保留设备名、上次地址与 serverId，供重新配对与
-     * 「是否换了服务端」的判断使用）。
+     * 解除当前服务端的配对：清空凭据（保留设备名与地址预填）。
+     * 多服务端下等价于 [remove] 当前活动条目，保留旧名是为了既有调用点。
      */
     fun clear() {
-        val name = deviceName
-        val address = lastBaseUrl
-        prefs.edit {
-            remove(KEY_DEVICE_ID)
-            remove(KEY_DEVICE_TOKEN)
-            remove(KEY_SERVER_NAME)
-            putString(KEY_DEVICE_NAME, name)
-            putString(KEY_BASE_URL, address)
-        }
-        _connection.value = null
+        val active = _activeServerId.value ?: return
+        remove(active)
     }
 
-    private fun read(): Connection? {
-        val baseUrl = prefs.getString(KEY_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: return null
-        val deviceId = prefs.getString(KEY_DEVICE_ID, null)?.takeIf { it.isNotBlank() } ?: return null
-        val token = prefs.getString(KEY_DEVICE_TOKEN, null)?.takeIf { it.isNotBlank() } ?: return null
+    // ------------------------------------------------------------------ 内部
+
+    private fun updateEntry(connection: Connection) {
+        val next = _connections.value.map { if (it.serverId == connection.serverId) connection else it }
+        writeAll(next, _activeServerId.value)
+    }
+
+    private fun activeConnection(): Connection? {
+        val id = _activeServerId.value ?: return null
+        return _connections.value.firstOrNull { it.serverId == id }
+    }
+
+    private fun readAll(): List<Connection> {
+        val ids = prefs.getString(KEY_SERVER_IDS, null)
+            ?.split(',')
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
+        val servers = ids.mapNotNull(::readOne)
+        if (servers.isEmpty()) return migrateLegacy()
+
+        // ids 列表里可能出现已损坏的条目，读不出来就剔除
+        if (servers.size != ids.size) writeAll(servers, readActiveServerId())
+        return servers
+    }
+
+    private fun readActiveServerId(): String? =
+        prefs.getString(KEY_ACTIVE_SERVER_ID, null)?.takeIf { it.isNotBlank() }
+
+    private fun readOne(serverId: String): Connection? {
+        val baseUrl = prefs.getString(serverKey(serverId, "baseUrl"), null)
+            ?.takeIf { it.isNotBlank() } ?: return null
+        val deviceId = prefs.getString(serverKey(serverId, "deviceId"), null)
+            ?.takeIf { it.isNotBlank() } ?: return null
+        val token = prefs.getString(serverKey(serverId, "deviceToken"), null)
+            ?.takeIf { it.isNotBlank() } ?: return null
 
         return Connection(
             baseUrl = baseUrl,
             deviceId = deviceId,
             deviceToken = token,
-            serverId = prefs.getString(KEY_SERVER_ID, null).orEmpty(),
-            serverName = prefs.getString(KEY_SERVER_NAME, null).orEmpty(),
-            tlsFingerprint = prefs.getString(KEY_TLS_FINGERPRINT, null)?.takeIf { it.isNotBlank() },
+            serverId = serverId,
+            serverName = prefs.getString(serverKey(serverId, "serverName"), null).orEmpty(),
+            tlsFingerprint = prefs.getString(serverKey(serverId, "tlsFingerprint"), null)
+                ?.takeIf { it.isNotBlank() },
         )
+    }
+
+    /** 把一台服务端的全部字段写进 prefs（不含 ids 列表与活动指针）。 */
+    private fun writeOne(connection: Connection) {
+        val prefix = serverKey(connection.serverId, "")
+        prefs.edit {
+            putString("${prefix}baseUrl", connection.baseUrl)
+            putString("${prefix}deviceId", connection.deviceId)
+            putString("${prefix}deviceToken", connection.deviceToken)
+            putString("${prefix}serverName", connection.serverName)
+            if (connection.tlsFingerprint != null) {
+                putString("${prefix}tlsFingerprint", connection.tlsFingerprint)
+            } else {
+                remove("${prefix}tlsFingerprint")
+            }
+        }
+    }
+
+    private fun eraseOne(serverId: String) {
+        prefs.edit {
+            remove(serverKey(serverId, "baseUrl"))
+            remove(serverKey(serverId, "deviceId"))
+            remove(serverKey(serverId, "deviceToken"))
+            remove(serverKey(serverId, "serverName"))
+            remove(serverKey(serverId, "tlsFingerprint"))
+        }
+    }
+
+    /** 一次性把整份状态（列表 + 活动指针）落盘并推送各 StateFlow。 */
+    private fun writeAll(servers: List<Connection>, activeServerId: String?) {
+        prefs.edit {
+            putString(KEY_SERVER_IDS, servers.joinToString(",") { it.serverId })
+            if (activeServerId != null && servers.any { it.serverId == activeServerId }) {
+                putString(KEY_ACTIVE_SERVER_ID, activeServerId)
+            } else {
+                remove(KEY_ACTIVE_SERVER_ID)
+            }
+        }
+        val knownIds = servers.map { it.serverId }.toSet()
+        // 物理删除已不在列表里的条目（解除配对后不留僵尸行）
+        readStoredIdsSnapshot().filterNot { it in knownIds }.forEach(::eraseOne)
+        servers.forEach(::writeOne)
+
+        _connections.value = servers
+        _activeServerId.value = activeServerId
+        _connection.value = activeServerId?.let { id -> servers.firstOrNull { it.serverId == id } }
+    }
+
+    /** writeAll 前的旧 ids 快照，用于找出需要物理删除的条目。 */
+    private fun readStoredIdsSnapshot(): List<String> =
+        prefs.getString(KEY_SERVER_IDS, null)
+            ?.split(',')
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
+
+    /**
+     * 0.1.x 单服务端格式迁移：旧平铺键 → 新 `server.<id>.*` 格式。
+     * 没有旧数据时是空操作。迁移走的是同一条 [writeAll]，StateFlow 因此有初值。
+     */
+    private fun migrateLegacy(): List<Connection> {
+        val baseUrl = prefs.getString("baseUrl", null)?.takeIf { it.isNotBlank() }
+        val deviceId = prefs.getString("deviceId", null)?.takeIf { it.isNotBlank() }
+        val token = prefs.getString("deviceToken", null)?.takeIf { it.isNotBlank() }
+        if (baseUrl == null || deviceId == null || token == null) return emptyList()
+
+        val legacy = Connection(
+            baseUrl = baseUrl,
+            deviceId = deviceId,
+            deviceToken = token,
+            serverId = prefs.getString("serverId", null).orEmpty().ifBlank { "legacy" },
+            serverName = prefs.getString("serverName", null).orEmpty(),
+            tlsFingerprint = prefs.getString("tlsFingerprint", null)?.takeIf { it.isNotBlank() },
+        )
+        writeAll(listOf(legacy), legacy.serverId)
+        // 旧键清掉，防止下次迁移重复叠加
+        prefs.edit {
+            remove("baseUrl")
+            remove("deviceId")
+            remove("deviceToken")
+            remove("serverId")
+            remove("serverName")
+            remove("tlsFingerprint")
+        }
+        return listOf(legacy)
     }
 
     companion object {
         private const val PREFS_NAME = "lan-drop.connection"
-        private const val KEY_BASE_URL = "baseUrl"
-        private const val KEY_DEVICE_ID = "deviceId"
-        private const val KEY_DEVICE_TOKEN = "deviceToken"
-        private const val KEY_SERVER_ID = "serverId"
-        private const val KEY_SERVER_NAME = "serverName"
+        private const val KEY_SERVER_IDS = "serverIds"
+        private const val KEY_ACTIVE_SERVER_ID = "activeServerId"
+        private const val KEY_LAST_BASE_URL = "lastBaseUrl"
         private const val KEY_DEVICE_NAME = "deviceName"
-        private const val KEY_TLS_FINGERPRINT = "tlsFingerprint"
+
+        private fun serverKey(serverId: String, field: String): String = "server.$serverId.$field"
 
         /** 服务端默认端口，与 `apps/server/src/config.ts` 保持一致。 */
         const val DEFAULT_PORT = 8787

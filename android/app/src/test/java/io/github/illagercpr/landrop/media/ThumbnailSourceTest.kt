@@ -192,6 +192,7 @@ private fun message(
     id: String = "msg-1",
 ): MessageEntity = MessageEntity(
     id = id,
+    serverId = "server-1",
     seq = 1,
     kind = kind,
     text = null,
@@ -214,6 +215,7 @@ private fun transfer(
     updatedAt: Long = 100,
 ): TransferEntity = TransferEntity(
     id = "$direction-$state-$updatedAt",
+    serverId = "server-1",
     messageId = messageId,
     direction = direction,
     fileName = "photo.jpg",

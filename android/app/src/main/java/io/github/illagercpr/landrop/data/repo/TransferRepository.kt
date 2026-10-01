@@ -98,6 +98,16 @@ class TransferRepository(
     private val jobs = mutableMapOf<String, Job>()
 
     /**
+     * 传输要连的连接：恢复任务按记录里的 serverId 找它自己的服务端，
+     * 新任务（serverId 为空）用当前活动服务端。任务归属在创建时定格，
+     * 之后切换服务端不影响在途任务连谁——凭据也只对各自服务端有效。
+     */
+    private fun connectionFor(serverId: String?): Connection? = when {
+        serverId.isNullOrBlank() -> store.connection.value
+        else -> store.byServerId(serverId) ?: store.connection.value
+    }
+
+    /**
      * 上传串行闸门。
      *
      * 上传一律排队：单发与批量共用同一把锁，避免「多选五个文件同时开五条连接」
@@ -235,17 +245,18 @@ class TransferRepository(
         mime: String?,
         existing: TransferEntity?,
     ) = withContext(Dispatchers.IO) {
-        val connection = store.connection.value ?: return@withContext
+        // 恢复任务连「任务自己的」服务端；新任务用当前活动服务端
+        val connection = connectionFor(existing?.serverId) ?: return@withContext
 
         val picked = runCatching { resolvePickedFile(uri) }.getOrElse { error ->
-            failBeforeStart(transferId, existing, "读取文件失败：${error.toUserMessage()}")
+            failBeforeStart(transferId, existing, "读取文件失败：${error.toUserMessage()}", connection.serverId)
             return@withContext
         }
 
         // 只有「大小解析不出来」（resolvePickedFile 以 -1 表示）才失败；
         // 0 是合法的空文件，走「无分片、直接收尾」路径，服务端同样支持。
         if (picked.size < 0) {
-            failBeforeStart(transferId, existing, "无法确定文件大小（${picked.name}）")
+            failBeforeStart(transferId, existing, "无法确定文件大小（${picked.name}）", connection.serverId)
             return@withContext
         }
 
@@ -258,6 +269,7 @@ class TransferRepository(
             updatedAt = now(),
         ) ?: TransferEntity(
             id = transferId,
+            serverId = connection.serverId,
             messageId = "",
             direction = TransferDirection.UPLOAD,
             fileName = picked.name,
@@ -367,7 +379,7 @@ class TransferRepository(
             }
 
             val message = api.completeUpload(connection, uploadId, digest.digest().toHexString())
-            messageDao.upsert(message.toEntity(connection.deviceId))
+            messageDao.upsert(message.toEntity(connection.serverId, connection.deviceId))
 
             dao.upsert(
                 entity.copy(
@@ -460,7 +472,8 @@ class TransferRepository(
         messageId: String,
         existing: TransferEntity?,
     ) = withContext(Dispatchers.IO) {
-        val connection = store.connection.value ?: return@withContext
+        // 恢复任务连「任务自己的」服务端；新任务用当前活动服务端
+        val connection = connectionFor(existing?.serverId) ?: return@withContext
 
         var entity = existing?.copy(
             state = TransferState.RUNNING,
@@ -468,6 +481,7 @@ class TransferRepository(
             updatedAt = now(),
         ) ?: TransferEntity(
             id = transferId,
+            serverId = connection.serverId,
             messageId = messageId,
             direction = TransferDirection.DOWNLOAD,
             fileName = fileName,
@@ -721,7 +735,7 @@ class TransferRepository(
     /** 清现场：中止服务端会话、删掉本地半成品、释放 SAF 长期授权，然后标记已取消。 */
     private suspend fun discardTransfer(transferId: String) {
         val transfer = dao.findById(transferId) ?: return
-        val connection = store.connection.value
+        val connection = connectionFor(transfer.serverId)
 
         if (transfer.direction == TransferDirection.UPLOAD &&
             transfer.uploadId != null &&
@@ -762,11 +776,12 @@ class TransferRepository(
      * 任务直接烧成失败；而且用户也未必希望一开 App 就占满带宽。
      */
     suspend fun reconcileInterruptedTransfers() = withContext(Dispatchers.IO) {
-        val connection = store.connection.value
         val active = dao.loadByStates(listOf(TransferState.QUEUED, TransferState.RUNNING))
         if (active.isEmpty()) return@withContext
 
         for (transfer in active) {
+            // 每条传输各连各的服务端（多服务端下「中断」不因切换服务端而改变归属）
+            val connection = connectionFor(transfer.serverId)
             if (transfer.direction == TransferDirection.UPLOAD) {
                 val uri = transfer.localUri?.let(Uri::parse)
                 // 源文件只有读权限，必须用 "r" 探测
@@ -872,9 +887,15 @@ class TransferRepository(
      * 新任务此刻还没有任何记录，必须补一条占位——否则用户点了发送却什么都没发生，
      * 连失败原因都看不到。
      */
-    private suspend fun failBeforeStart(transferId: String, existing: TransferEntity?, message: String) {
+    private suspend fun failBeforeStart(
+        transferId: String,
+        existing: TransferEntity?,
+        message: String,
+        serverId: String,
+    ) {
         val entity = existing ?: TransferEntity(
             id = transferId,
+            serverId = serverId,
             messageId = "",
             direction = TransferDirection.UPLOAD,
             fileName = "未知文件",

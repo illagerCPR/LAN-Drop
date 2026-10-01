@@ -38,6 +38,8 @@ object TransferState {
 )
 data class TransferEntity(
     @PrimaryKey val id: String,
+    /** 传输归属的服务端：恢复任务要连它自己的服务端，而不是「当前选中的」 */
+    @ColumnInfo(name = "server_id") val serverId: String,
     @ColumnInfo(name = "message_id") val messageId: String,
     val direction: String,
     @ColumnInfo(name = "file_name") val fileName: String,

@@ -2,7 +2,6 @@ package io.github.illagercpr.landrop.data.repo
 
 import android.os.Build
 import android.os.SystemClock
-import io.github.illagercpr.landrop.data.local.LanDropDatabase
 import io.github.illagercpr.landrop.data.prefs.Connection
 import io.github.illagercpr.landrop.data.prefs.ConnectionStore
 import io.github.illagercpr.landrop.net.DiscoveredServer
@@ -34,7 +33,6 @@ sealed interface PairResult {
 class PairingRepository(
     private val store: ConnectionStore,
     private val api: LanDropApi,
-    private val database: LanDropDatabase,
     private val socket: LanDropSocket,
     private val discovery: ServerDiscovery,
     private val scope: CoroutineScope,
@@ -141,14 +139,8 @@ class PairingRepository(
                 tlsFingerprint = effectiveFingerprint,
             )
 
-            val previousServerId = store.lastServerId
+            // 多服务端下缓存按 serverId 隔离、游标各自单调，换服务端不再需要清缓存
             store.save(connection)
-
-            // 换了服务端：本地消息缓存的 seq 游标不再有意义（新服务端 seq 从 1 重新开始），
-            // 必须清掉，否则增量同步会把新服务端的前 N 条当成「已见过」整段跳过。
-            if (previousServerId.isNotEmpty() && previousServerId != connection.serverId) {
-                database.messageDao().clear()
-            }
 
             PairResult.Success(connection)
         } catch (e: Exception) {

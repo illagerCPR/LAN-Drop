@@ -21,13 +21,14 @@ object MessageLocalState {
 /**
  * 会话消息的本地缓存。
  *
- * `seq` 为服务端权威序号，唯一索引保证增量同步不会写入重复行；
- * 断线重连时以本地最大 `seq` 作为 `since` 游标拉取补偿。
+ * `serverId` 是消息所属服务端（多服务端缓存隔离的依据），`(server_id, seq)` 联合
+ * 唯一索引保证增量同步不会写入重复行；断线重连时以本地最大 `seq` 作为 `since`
+ * 游标拉取补偿——`seq` 只在同一台服务端内单调，跨服务端比较没有意义。
  */
 @Entity(
     tableName = "messages",
     indices = [
-        Index(value = ["seq"], unique = true),
+        Index(value = ["server_id", "seq"], unique = true),
         // 注意：Room 的 Index 用「列名」而非 Kotlin 属性名，
         // createdAt 属性经 @ColumnInfo 映射为 created_at 列。
         Index(value = ["created_at"]),
@@ -35,6 +36,7 @@ object MessageLocalState {
 )
 data class MessageEntity(
     @PrimaryKey val id: String,
+    @ColumnInfo(name = "server_id") val serverId: String,
     val seq: Long,
     val kind: String,
     val text: String?,

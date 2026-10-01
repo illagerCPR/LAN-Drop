@@ -7,9 +7,11 @@ import io.github.illagercpr.landrop.protocol.MessageDto
  *
  * `direction` 不由协议携带（服务端视角没有「谁的本机」），而是拿发送者 ID
  * 与本机设备 ID 比对得出——同一份数据在不同设备上渲染方向相反是正确的。
+ * [serverId] 标记消息属于哪台服务端（多服务端缓存隔离）。
  */
-fun MessageDto.toEntity(myDeviceId: String): MessageEntity = MessageEntity(
+fun MessageDto.toEntity(serverId: String, myDeviceId: String): MessageEntity = MessageEntity(
     id = id,
+    serverId = serverId,
     seq = seq,
     kind = kind.name.lowercase(),
     text = text,

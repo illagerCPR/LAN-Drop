@@ -50,6 +50,8 @@ fun PairingScreen(
     viewModel: PairingViewModel,
     onStartQrScan: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 非空时顶部显示「返回聊天」：已在会话页时从「添加服务端」进入本页的出口。 */
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -65,6 +67,10 @@ fun PairingScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
         ) {
+            if (onBack != null) {
+                TextButton(onClick = onBack) { Text("返回聊天") }
+                Spacer(Modifier.height(8.dp))
+            }
             Text("连接到 PC", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(8.dp))
             Text(

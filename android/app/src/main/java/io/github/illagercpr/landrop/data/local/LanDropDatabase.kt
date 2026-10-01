@@ -14,10 +14,13 @@ import androidx.room.RoomDatabase
  * v2：transfers 增加 `remote_file_id`（下载方向断点续传要靠它重新发起 Range 请求）。
  * 破坏性迁移会丢掉传输记录，代价只是「升级 App 时正在传的任务无法续传」，
  * 源文件仍在手机上，重新发起即可。
+ *
+ * v3：messages/transfers 增加 `server_id`（多服务端，缓存与传输记录按服务端隔离）。
+ * 仍是破坏性迁移：升级后本地缓存清空，消息从服务端重新拉回（服务端才是权威账本）。
  */
 @Database(
     entities = [MessageEntity::class, TransferEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class LanDropDatabase : RoomDatabase() {

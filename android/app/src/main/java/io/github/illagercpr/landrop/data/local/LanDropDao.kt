@@ -9,17 +9,17 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface MessageDao {
 
-    /** 时间线（新→旧），供聊天气泡列表使用。 */
-    @Query("SELECT * FROM messages ORDER BY seq DESC LIMIT :limit")
-    fun observeRecent(limit: Int = 200): Flow<List<MessageEntity>>
+    /** 时间线（新→旧），供聊天气泡列表使用。按当前服务端隔离。 */
+    @Query("SELECT * FROM messages WHERE server_id = :serverId ORDER BY seq DESC LIMIT :limit")
+    fun observeRecent(serverId: String, limit: Int = 200): Flow<List<MessageEntity>>
 
     /** 增量补偿：拉取本地缺失的后续消息。 */
-    @Query("SELECT * FROM messages WHERE seq > :since ORDER BY seq ASC")
-    suspend fun loadSince(since: Long): List<MessageEntity>
+    @Query("SELECT * FROM messages WHERE server_id = :serverId AND seq > :since ORDER BY seq ASC")
+    suspend fun loadSince(serverId: String, since: Long): List<MessageEntity>
 
-    /** 本地游标：断线重连时作为 `since` 参数。 */
-    @Query("SELECT COALESCE(MAX(seq), 0) FROM messages")
-    suspend fun latestSeq(): Long
+    /** 本地游标：断线重连时作为 `since` 参数。只对同一台服务端有意义。 */
+    @Query("SELECT COALESCE(MAX(seq), 0) FROM messages WHERE server_id = :serverId")
+    suspend fun latestSeq(serverId: String): Long
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<MessageEntity>)
@@ -27,12 +27,12 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: MessageEntity)
 
-    @Query("DELETE FROM messages")
-    suspend fun clear()
+    @Query("DELETE FROM messages WHERE server_id = :serverId")
+    suspend fun clear(serverId: String)
 
     /** 保留策略联动：服务端删掉了 `seq <= uptoSeq` 的消息，本地缓存同步删除。 */
-    @Query("DELETE FROM messages WHERE seq <= :uptoSeq")
-    suspend fun deleteUpTo(uptoSeq: Long)
+    @Query("DELETE FROM messages WHERE server_id = :serverId AND seq <= :uptoSeq")
+    suspend fun deleteUpTo(serverId: String, uptoSeq: Long)
 }
 
 @Dao

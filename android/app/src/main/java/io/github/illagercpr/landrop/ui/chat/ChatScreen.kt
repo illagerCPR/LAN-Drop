@@ -80,6 +80,8 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     serverName: String,
     modifier: Modifier = Modifier,
+    /** 「添加服务端」出口：交给根层用配对页覆盖当前界面。 */
+    onAddServer: () -> Unit = {},
 ) {
     val timeline by viewModel.timeline.collectAsStateWithLifecycle(initialValue = emptyList())
     val outbox by viewModel.outbox.collectAsStateWithLifecycle()
@@ -89,12 +91,15 @@ fun ChatScreen(
     val onlineCount by viewModel.onlineCount.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val autoReceiveFiles by viewModel.autoReceiveFiles.collectAsStateWithLifecycle()
+    val servers by viewModel.servers.collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeConnection by viewModel.activeConnection.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
 
     var showTransfers by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
+    var showServers by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
@@ -154,6 +159,61 @@ fun ChatScreen(
         )
     }
 
+    if (showServers) {
+        // 服务端切换器：凭据与缓存都按服务端隔离，切换 = 换活动指针，不动数据
+        AlertDialog(
+            onDismissRequest = { showServers = false },
+            title = { Text("服务端管理") },
+            text = {
+                Column {
+                    if (servers.isEmpty()) {
+                        Text(
+                            "还没有已配对的服务端。",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    servers.forEach { server ->
+                        val active = server.serverId == activeConnection?.serverId
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = if (active) "✓ ${server.serverName.ifBlank { "LAN-Drop" }}" else server.serverName.ifBlank { "LAN-Drop" },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                Text(
+                                    text = server.baseUrl,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (!active) {
+                                TextButton(onClick = {
+                                    viewModel.switchServer(server.serverId)
+                                    showServers = false
+                                }) { Text("切换") }
+                            }
+                            TextButton(onClick = {
+                                viewModel.removeServer(server.serverId)
+                                // 删的是当前服务端时凭据变空，根层自动回到配对页
+                                showServers = false
+                            }) { Text("解除") }
+                        }
+                    }
+                    TextButton(onClick = {
+                        showServers = false
+                        onAddServer()
+                    }) { Text("添加服务端…") }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showServers = false }) { Text("关闭") }
+            },
+        )
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -203,6 +263,13 @@ fun ChatScreen(
                                 onClick = {
                                     showMenu = false
                                     showClearConfirm = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("服务端管理") },
+                                onClick = {
+                                    showMenu = false
+                                    showServers = true
                                 },
                             )
                             DropdownMenuItem(

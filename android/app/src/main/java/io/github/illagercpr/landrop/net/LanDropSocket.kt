@@ -154,17 +154,29 @@ class LanDropSocket(
             .header("Authorization", "Bearer ${connection.deviceToken}")
             .build()
 
-        socket = clientFor(connection.tlsFingerprint).newWebSocket(request, listener)
+        socket = clientFor(connection.tlsFingerprint).newWebSocket(request, listenerFor(connection))
     }
 
-    private val listener = object : WebSocketListener() {
+    /**
+     * 监听器按「发起连接时的连接实例」把关：切换服务端后，旧 socket 的迟到回调
+     * 一律忽略——否则旧服务端的消息会写进新服务端的缓存行（serverId 标错、
+     * seq 冲突），状态条也会被旧连接的关闭事件拖着乱跳。
+     */
+    private fun listenerFor(connection: Connection): WebSocketListener = object : WebSocketListener() {
+        private fun isCurrent(): Boolean = target === connection
+
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!isCurrent()) {
+                webSocket.close(NORMAL_CLOSURE, "switched")
+                return
+            }
             attempt = 0
             _state.value = SocketState.ONLINE
             emit(WsEvent.Connected)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (!isCurrent()) return
             parseWsEnvelope(text, json)?.let(::emit)
         }
 
@@ -174,6 +186,7 @@ class LanDropSocket(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrent()) return
             socket = null
             if (handleCredentialRejection(code, null)) return
             if (!manualClose) {
@@ -183,6 +196,7 @@ class LanDropSocket(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (!isCurrent()) return
             socket = null
             // 握手阶段就被拒时（HTTP 层 401）走这里；升级成功后被服务端踢走走 onClosed
             if (handleCredentialRejection(response?.code ?: 0, t)) return

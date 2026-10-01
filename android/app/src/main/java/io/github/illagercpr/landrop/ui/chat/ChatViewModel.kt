@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.illagercpr.landrop.data.local.MessageEntity
+import io.github.illagercpr.landrop.data.prefs.ConnectionStore
 import io.github.illagercpr.landrop.data.repo.MessageRepository
 import io.github.illagercpr.landrop.data.repo.PairingRepository
 import io.github.illagercpr.landrop.data.repo.TransferRepository
@@ -51,6 +52,7 @@ class ChatViewModel(
     private val messages: MessageRepository,
     private val transfers: TransferRepository,
     private val pairing: PairingRepository,
+    private val connectionStore: ConnectionStore,
     private val settings: SettingsStore,
     private val thumbnails: ThumbnailLoader,
 ) : ViewModel() {
@@ -61,6 +63,12 @@ class ChatViewModel(
     val syncState = messages.syncState
     val onlineCount = messages.onlineCount
     val peerOnline = messages.peerOnline
+
+    /** 已保存的服务端列表（服务端切换器的数据源）。 */
+    val servers = connectionStore.connections
+
+    /** 当前服务端（切换器里标记「使用中」）。 */
+    val activeConnection = connectionStore.connection
 
     val autoReceiveFiles = settings.autoReceiveFiles
 
@@ -213,6 +221,23 @@ class ChatViewModel(
 
     fun unpair() {
         pairing.unpair()
+    }
+
+    /**
+     * 切换到另一台已配对的服务端。
+     *
+     * 凭据与缓存都不动：连接层会自动断开旧长连接、按新服务端重连并增量同步，
+     * 时间线随之换成那台服务端的缓存（各服务端 seq 各自单调，互不掺和）。
+     */
+    fun switchServer(serverId: String) {
+        if (!connectionStore.switchTo(serverId)) {
+            _notice.value = "切换失败：找不到这台服务端的凭据"
+        }
+    }
+
+    /** 解除一台服务端的配对（可再重新配对回来；缓存保留，重新配对后立即恢复）。 */
+    fun removeServer(serverId: String) {
+        connectionStore.remove(serverId)
     }
 
     /**

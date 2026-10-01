@@ -17,10 +17,13 @@ import io.github.illagercpr.landrop.protocol.isHttpUrl
 import java.util.Collections
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -84,8 +87,19 @@ class MessageRepository(
      */
     private val autoReceivedIds: MutableSet<String> = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
 
-    /** 时间线（新 → 旧）。界面用 `reverseLayout = true` 的 LazyColumn 渲染，天然贴底。 */
-    val timeline: Flow<List<MessageEntity>> = dao.observeRecent(TIMELINE_LIMIT)
+    /**
+     * 时间线（新 → 旧）。界面用 `reverseLayout = true` 的 LazyColumn 渲染，天然贴底。
+     * 跟随当前服务端：切换服务端时整列换成那台的缓存，互不掺和。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val timeline: Flow<List<MessageEntity>> = store.connection
+        .flatMapLatest { connection ->
+            if (connection == null) {
+                flowOf(emptyList())
+            } else {
+                dao.observeRecent(connection.serverId, TIMELINE_LIMIT)
+            }
+        }
 
     val socketState: StateFlow<SocketState> = socket.state
 
@@ -130,17 +144,18 @@ class MessageRepository(
         syncMutex.withLock {
             _syncState.value = SyncState.Syncing
             try {
+                val serverId = connection.serverId
                 while (true) {
-                    val since = dao.latestSeq()
+                    val since = dao.latestSeq(serverId)
                     val page = api.listMessages(connection, since, PAGE_SIZE)
 
                     // 补上离线期间错过的保留清理：服务端删到哪，本地缓存同步删到哪
                     // （幂等，每页重复执行无副作用；值为 0 时是空区间）
-                    dao.deleteUpTo(page.purgedUpto)
+                    dao.deleteUpTo(serverId, page.purgedUpto)
 
                     if (page.items.isEmpty()) break
 
-                    val entities = page.items.map { it.toEntity(connection.deviceId) }
+                    val entities = page.items.map { it.toEntity(serverId, connection.deviceId) }
                     dao.upsertAll(entities)
                     // 离线期间的入站文件同样参与自动接收，否则开关形同虚设
                     entities.forEach { maybeAutoReceive(it) }
@@ -164,13 +179,14 @@ class MessageRepository(
         // （与 Web 端同一条规则，见 [isHttpUrl]）
         val kind = if (isHttpUrl(text)) MESSAGE_KIND_LINK else MESSAGE_KIND_TEXT
         val dto = api.sendText(connection, text, kind)
-        val entity = dto.toEntity(connection.deviceId)
+        val entity = dto.toEntity(connection.serverId, connection.deviceId)
         dao.upsert(entity)
         return entity
     }
 
     suspend fun clearLocal() {
-        dao.clear()
+        val connection = store.connection.value ?: return
+        dao.clear(connection.serverId)
     }
 
     private suspend fun handleEvent(event: WsEvent) {
@@ -187,11 +203,11 @@ class MessageRepository(
             is WsEvent.Hello -> {
                 _onlineCount.value = event.payload.onlineCount
                 // 服务端水位比本地游标高 → 离线期间错过消息，立刻补拉
-                if (event.payload.latestSeq > dao.latestSeq()) syncNow()
+                if (event.payload.latestSeq > dao.latestSeq(connection.serverId)) syncNow()
             }
 
             is WsEvent.MessageNew -> {
-                val entity = event.message.toEntity(connection.deviceId)
+                val entity = event.message.toEntity(connection.serverId, connection.deviceId)
                 dao.upsert(entity)
                 // 只提醒对端发来的：服务端会把消息广播给所有客户端，包括发送者自己
                 if (entity.direction == MessageDirection.INBOUND) {
@@ -200,11 +216,11 @@ class MessageRepository(
                 }
             }
 
-            is WsEvent.MessagesCleared -> dao.clear()
+            is WsEvent.MessagesCleared -> dao.clear(connection.serverId)
 
             // 保留策略的前缀删除：删到 seq X 为止，本地缓存同步删到 X；
             // 游标不用动（seq 单调递增，新消息照常增量同步）
-            is WsEvent.MessagesPurged -> dao.deleteUpTo(event.uptoSeq)
+            is WsEvent.MessagesPurged -> dao.deleteUpTo(connection.serverId, event.uptoSeq)
 
             is WsEvent.Presence -> {
                 event.onlineCount?.let { _onlineCount.value = it }

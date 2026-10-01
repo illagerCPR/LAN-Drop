@@ -102,7 +102,7 @@ class AppContainer(context: Context) {
         foreground = TransferServiceLauncher { TransferService.start(appContext) },
     )
 
-    val pairing = PairingRepository(connectionStore, api, database, socket, discovery, appScope)
+    val pairing = PairingRepository(connectionStore, api, socket, discovery, appScope)
 
     /** 启动会话（幂等）；在 Application.onCreate 里调一次。 */
     fun start() {
