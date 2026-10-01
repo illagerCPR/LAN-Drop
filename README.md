@@ -496,13 +496,23 @@ pino 日志落 `~/.local/share/io.github.illagercpr.landrop.desktop/logs/`；数
 
 - 终端只剩两行启停提示，**不再出现** `Gtk-CRITICAL: gtk_widget_get_scale_factor …` 与
   libayatana 的 deprecation warning（进程内日志过滤器 + 无托盘宿主时不建托盘）。
+- **根因对照实验**：用 GIO 写了个最小 `StatusNotifierWatcher` 替身（只实现
+  `RegisterStatusNotifierItem` + 三个只读属性）跑在会话总线上——
+  ① 新 AppImage 检测到宿主后**不再走无托盘分支**（无「无托盘模式」提示、不自动开浏览器），
+  且替身日志里出现 `RegisterStatusNotifierItem(/org/ayatana/NotificationItem/tray_icon_tray_app_main_tray)`
+  ——托盘真的建起来并注册了（有宿主的环境无回归）；
+  ② 把**未打日志过滤的 0.2.0** 放到同一个宿主下跑，`Gtk-CRITICAL` 计数为 **0** ——
+  证明那行断言失败**只出在无宿主的 fallback 路径**，跳过托盘的修法正中原因，而不是把日志藏起来。
 - 服务端照常拉起：`0.0.0.0:8787`（https/wss）+ `127.0.0.1:8789`（回环明文）均在监听，
   `GET /`、`/api/v1/info` 在本机与 Windows 侧 `http://127.0.0.1:8789/` 都是 200。
 - **控制台自动打开**：壳在回环端口可连接后才调用 Windows 侧浏览器——替身验证记录
   「8789 就绪于启动后 ~0.6 s，`/c start "" http://127.0.0.1:8789/` 在就绪之后才发出」
   （真浏览器打开时服务端日志连续出现 `GET /` + 静态资源 + `/api/v1/info`）。
-- 手机（vivo V2301A，release 0.2.0 客户端）连的是同一台服务端（同一数据根、同一 serverId），
-  无需重新配对。
+- **手机侧**：vivo V2301A（release 0.2.0 客户端）连的是同一台服务端（同一数据根、同一 serverId
+  `7446d3d5…`，指纹 `vjNiQWoS…`）；把 App 切到前台后服务端日志出现它的真实请求
+  （`GET /api/v1/info` → `POST /api/v1/pair` 200 → `GET /api/v1/ws`「WebSocket 已连接」→
+  `GET /api/v1/messages?since=0/114` 200），界面显示「在线 · 1 台设备」。
+  注：手机的重连有退避，切前台后要等近 10 秒才会发请求（第一次只等 10 秒时看起来像「连不上」）。
 
 ## 系统分享面板与多选批量
 
