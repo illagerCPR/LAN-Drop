@@ -1,6 +1,6 @@
 {
   "name": "@lan-drop/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "LAN-Drop Web 前端：配对、聊天时间线、拖拽上传与下载",
@@ -24,5 +24,6 @@
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "^6.0.3",
     "vite": "^7.0.0"
-  }
+  },
+  "license": "MIT"
 }

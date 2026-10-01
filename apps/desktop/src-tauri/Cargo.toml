@@ -1,6 +1,6 @@
 [package]
 name = "lan-drop-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "LAN-Drop 桌面常驻壳：Tauri 托盘 + Node sidecar 服务端"
 edition = "2021"
 

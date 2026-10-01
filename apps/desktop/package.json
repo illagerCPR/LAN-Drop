@@ -1,6 +1,6 @@
 {
   "name": "@lan-drop/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "LAN-Drop 桌面常驻壳（Tauri 2.x 托盘 + Node sidecar）",
   "scripts": {
@@ -9,5 +9,6 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.0"
-  }
+  },
+  "license": "MIT"
 }

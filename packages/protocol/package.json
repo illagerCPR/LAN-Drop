@@ -1,6 +1,6 @@
 {
   "name": "@lan-drop/protocol",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "LAN-Drop 协议单一事实源：服务端与前端共用，Android 侧据此生成 Kotlin 模型",
@@ -14,5 +14,6 @@
   "devDependencies": {
     "@types/node": "^24.19.0",
     "typescript": "^6.0.3"
-  }
+  },
+  "license": "MIT"
 }

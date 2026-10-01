@@ -1,6 +1,6 @@
 {
   "name": "@lan-drop/server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "LAN-Drop 服务端：HTTP + WebSocket + SQLite + 文件流",
@@ -23,5 +23,6 @@
     "@types/ws": "^8.18.2",
     "typescript": "^6.0.3",
     "ws": "^8.22.0"
-  }
+  },
+  "license": "MIT"
 }
