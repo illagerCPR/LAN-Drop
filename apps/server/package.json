@@ -1,6 +1,6 @@
 {
   "name": "@lan-drop/server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "LAN-Drop 服务端：HTTP + WebSocket + SQLite + 文件流",

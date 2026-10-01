@@ -5,6 +5,26 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-10-01
+
+Linux 桌面壳修复版本。**只改桌面常驻壳（Tauri）**：服务端、协议、Android 客户端与 0.2.0 相同，
+已配对的设备无需重新配对，聊天与传输记录不受影响。
+
+### 修复
+
+- **无托盘宿主时 Linux 桌面壳没有入口、控制台打不开**（WSLg / 极简会话 / GNOME 未装
+  AppIndicator 扩展）：会话总线上没有 `org.kde.StatusNotifierWatcher` 时不再创建托盘——
+  那条路只会让 libayatana-appindicator 退化成失败的 GtkStatusIcon fallback，在 GTK 内部打出
+  `gtk_widget_get_scale_factor: assertion 'GTK_IS_WIDGET (widget)' failed`，而托盘图标照样
+  不显示（服务端其实一直在正常监听）。现在改为**启动即打开控制台**：无托盘时浏览器是用户
+  唯一能看见的入口；WSL 里交给 Windows 侧默认浏览器（`cmd.exe /c start`），其余 Linux 走
+  xdg-open，终端另打印控制台地址横幅。
+- **控制台打开早于服务端 bind，浏览器只会得到「无法访问此页面」**：sidecar 是刚拉起的，
+  node 需要约 0.6 秒才监听回环端口（实测此时服务端日志里连一条请求都没有——连接被拒）。
+  改为轮询到回环端口可连接（最多 30 秒）再打开浏览器。
+- 那条 GTK CRITICAL 与 libayatana 的弃用警告不再出现在终端（日志过滤器只匹配这两条固定
+  文案，其余 GTK 消息照旧输出）；托盘图标缺失也不再让壳启动失败。
+
 ## [0.2.0] - 2026-10-01
 
 安全加固与多服务端版本。**服务端与客户端需同步升级到 0.2.0**：TLS 默认开启后，

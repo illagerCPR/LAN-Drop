@@ -1978,8 +1978,10 @@ dependencies = [
 
 [[package]]
 name = "lan-drop-desktop"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
+ "gio",
+ "glib",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

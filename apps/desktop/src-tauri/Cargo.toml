@@ -1,6 +1,6 @@
 [package]
 name = "lan-drop-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "LAN-Drop 桌面常驻壳：Tauri 托盘 + Node sidecar 服务端"
 edition = "2021"
 
@@ -13,6 +13,12 @@ tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
+
+# Linux 专用：判定托盘宿主是否存在（GIO 会话总线查询）、过滤两条上游固定噪音（GLib 日志）。
+# 两者都已在 tray-icon/libappindicator 的依赖树里（gio 0.18 / glib 0.18），不引入新的下载。
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.18"
+glib = "0.18"
 
 [profile.release]
 strip = true

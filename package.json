@@ -1,6 +1,6 @@
 {
   "name": "lan-drop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "局域网文件与文字传输工具，替代已下线的 Edge Drop",

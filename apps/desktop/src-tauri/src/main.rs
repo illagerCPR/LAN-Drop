@@ -6,6 +6,11 @@
 //! node 直跑 `LAN_DROP_DEV_ENTRY` 指向的 `apps/server/src/index.ts`）。控制台（Web UI）
 //! 在系统浏览器打开；数据目录沿用服务端默认（Windows `%LOCALAPPDATA%\LAN-Drop`），
 //! 与开发态、便携包时代一致，配对数据天然延续。
+//!
+//! Linux 的降级路径（WSLg、极简会话、GNOME 未装 AppIndicator 扩展）：**服务端可用性优先于托盘**。
+//! 会话总线上没有 StatusNotifierWatcher 时根本不建托盘（那条路只会让 libayatana-appindicator
+//! 退化成失败的 GtkStatusIcon fallback 并打出 Gtk-CRITICAL，图标却照样不显示），
+//! 改为启动即打开控制台——无托盘时浏览器是用户唯一能看见的入口。Windows 不降级。
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -35,7 +40,8 @@ struct ServerHandle {
     killed_by_us: AtomicBool,
 }
 
-fn console_url() -> String {
+/// 控制台（回环明文监听器）的端口。
+fn console_port() -> u16 {
     // TLS 语义必须与服务端 config.ts 的 parseBoolOr 完全一致：
     // 未设置 = 开启（服务端默认），设置后只有 "1"/"true" 算开启。
     // TLS 开启时 LAN 端口是自签证书，浏览器会弹警告；控制台走回环明文端口。
@@ -46,7 +52,7 @@ fn console_url() -> String {
         }
         Err(_) => true,
     };
-    let port = if tls_enabled {
+    if tls_enabled {
         std::env::var("LAN_DROP_LOOPBACK_PORT")
             .ok()
             .and_then(|value| value.trim().parse::<u16>().ok())
@@ -56,14 +62,147 @@ fn console_url() -> String {
             .ok()
             .and_then(|value| value.trim().parse::<u16>().ok())
             .unwrap_or(DEFAULT_PORT)
-    };
-    format!("http://127.0.0.1:{port}/")
+    }
+}
+
+fn console_url() -> String {
+    format!("http://127.0.0.1:{}/", console_port())
+}
+
+/// 等回环监听器真的就绪，再打开控制台（另起线程，不阻塞 setup）。
+///
+/// sidecar 是刚 spawn 出来的，node 要一两秒才 bind 端口；此刻抢先打开浏览器只会得到
+/// 「无法访问此页面」——实测这个时间差下服务端日志里连一条请求都没有（连接被拒，压根没到达），
+/// 用户看到的就是「控制台打不开」。轮询到端口可连接为止（最多 30 秒）再交给浏览器。
+fn open_console_when_ready(app: AppHandle) {
+    std::thread::spawn(move || {
+        let port = console_port();
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300))
+                .is_ok()
+            {
+                eprintln!(
+                    "控制台已就绪（等待 {} ms），打开 {}",
+                    started.elapsed().as_millis(),
+                    console_url()
+                );
+                open_console(&app);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        eprintln!("等待控制台端口 {port} 超时，仍尝试打开 {}", console_url());
+        open_console(&app);
+    });
 }
 
 fn open_console(app: &AppHandle) {
-    if let Err(error) = app.opener().open_url(console_url(), None::<&str>) {
-        eprintln!("打开控制台失败: {error}");
+    let url = console_url();
+    // WSLg 里没有 Linux 浏览器：xdg-open 只会「成功返回、什么都没有发生」，控制台要交给
+    // Windows 侧的默认浏览器打开（`cmd.exe /c start` 走 WSL 交互；WSL2 镜像模式下 Windows
+    // 浏览器访问 127.0.0.1:<回环端口> 能直达 WSL 的回环监听器，已实测 200）。
+    #[cfg(target_os = "linux")]
+    if is_wsl() && spawn_windows_browser(&url) {
+        return;
     }
+    if let Err(error) = app.opener().open_url(url.clone(), None::<&str>) {
+        eprintln!("打开控制台失败（{error}），请手动在浏览器访问 {url}");
+    }
+}
+
+/// 是否运行在 WSL 里（WSLg 的「打开浏览器」必须借 Windows 侧）。
+#[cfg(target_os = "linux")]
+fn is_wsl() -> bool {
+    std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::env::var_os("WSL_INTEROP").is_some()
+        || std::fs::read_to_string("/proc/version")
+            .map(|text| text.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false)
+}
+
+/// 用 Windows 侧默认浏览器打开 URL；`cmd.exe` 不存在（非 WSL）或启动失败时返回 false，
+/// 由调用方退回 xdg-open。/c start 的第一个参数是窗口标题，必须给空串占位。
+/// 失败原因一定要打出来：这条路上任何静默失败都会表现成「什么都没发生」，极难排查。
+#[cfg(target_os = "linux")]
+fn spawn_windows_browser(url: &str) -> bool {
+    match std::process::Command::new("cmd.exe")
+        .args(["/c", "start", "", url])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!("调用 Windows 侧 cmd.exe 失败（{error}）");
+            false
+        }
+    }
+}
+
+/// 会话总线上有没有 StatusNotifierWatcher 宿主（KDE 面板、GNOME 的 AppIndicator 扩展等）。
+///
+/// 没有宿主时（WSLg、无桌面环境的极简会话、GNOME 未装扩展）**不要**去建托盘：
+/// libayatana-appindicator 会退化成 GtkStatusIcon fallback，图标照样不显示，却在 GTK 内部
+/// 打出 `gtk_widget_get_scale_factor: assertion 'GTK_IS_WIDGET (widget)' failed`
+/// （fallback 的托盘 widget 根本没建出来），用户看到的就是这行吓人的 CRITICAL 加上
+/// 「什么都没有发生」。这里把这条路径整条跳过，改为自动打开控制台——无托盘时浏览器是唯一入口。
+#[cfg(target_os = "linux")]
+fn status_notifier_watcher_present() -> bool {
+    use gio::glib::variant::ToVariant;
+
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return false;
+    };
+    let parameters = ("org.kde.StatusNotifierWatcher",).to_variant();
+    let reply = bus.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "NameHasOwner",
+        Some(&parameters),
+        None,
+        gio::DBusCallFlags::NONE,
+        2_000,
+        gio::Cancellable::NONE,
+    );
+    reply
+        .ok()
+        .and_then(|value| value.get::<(bool,)>())
+        .map(|(has_owner,)| has_owner)
+        .unwrap_or(false)
+}
+
+/// 滤掉两条与本项目无关的上游固定噪音，其余 GTK 消息原样转交 GLib 默认处理器：
+///  1. `libayatana-appindicator-WARNING: ... is deprecated`（库构造时无条件打印）；
+///  2. `Gtk-CRITICAL: gtk_widget_get_scale_factor: assertion 'GTK_IS_WIDGET (widget)' failed`
+///     —— 见 status_notifier_watcher_present() 的注释；有托盘宿主时它也可能出现，无功能后果。
+/// 过滤只按域 + 完整消息片段匹配，**不要**扩大范围：真实的 GTK 错误必须照旧可见。
+#[cfg(target_os = "linux")]
+fn install_linux_log_filter() {
+    use glib::LogLevels;
+
+    glib::log_set_handler(
+        Some("Gtk"),
+        LogLevels::LEVEL_CRITICAL,
+        false,
+        false,
+        |domain, level, message| {
+            if message.contains("gtk_widget_get_scale_factor") {
+                return;
+            }
+            glib::log_default_handler(domain, level, Some(message));
+        },
+    );
+    glib::log_set_handler(
+        Some("libayatana-appindicator"),
+        LogLevels::LEVEL_WARNING | LogLevels::LEVEL_INFO | LogLevels::LEVEL_DEBUG,
+        false,
+        false,
+        |_, _, _| {},
+    );
 }
 
 fn kill_server(app: &AppHandle) {
@@ -265,6 +404,9 @@ fn toggle_autostart(app: &AppHandle) {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    install_linux_log_filter();
+
     tauri::Builder::default()
         // single-instance 必须最先注册：第二次启动只把控制台拉起来，绝不出现第二个 sidecar。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -280,41 +422,62 @@ fn main() {
             ensure_data_root();
             spawn_server(app.handle())?;
 
-            let open = MenuItem::with_id(app, "open", "打开控制台", true, None::<&str>)?;
-            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-            let autostart = CheckMenuItem::with_id(
-                app,
-                "autostart",
-                "开机自启",
-                true,
-                autostart_enabled,
-                None::<&str>,
-            )?;
-            let _ = AUTOSTART_ITEM.set(autostart.clone());
-            let quit = MenuItem::with_id(app, "quit", "退出 LAN-Drop", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &autostart, &quit])?;
+            // 服务端已经在跑了，接下来只处理「入口」：有托盘宿主就建托盘，没有就走降级路径
+            // （跳过 GTK 托盘——那条路只会打断言失败且图标照样不显示——改为自动打开控制台）。
+            #[cfg(target_os = "linux")]
+            let tray_host = status_notifier_watcher_present();
+            #[cfg(not(target_os = "linux"))]
+            let tray_host = true;
 
-            let tray_result = TrayIconBuilder::with_id("main-tray")
-                .icon(app.default_window_icon().expect("应用图标缺失").clone())
-                .tooltip("LAN-Drop")
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => open_console(app),
-                    "autostart" => toggle_autostart(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app);
-            // 无 StatusNotifierWatcher 的环境（WSLg、部分 Wayland 会话）里 libappindicator
-            // 初始化不了托盘。Linux 下降级为「无托盘但服务端照常常驻」——服务端可用性
-            // 优先于托盘入口，退出交由 sidecar 意外退出路径或 pkill -x LAN-Drop。
-            // Windows 不降级：托盘是唯一交互入口，失败即 setup 失败（与历史行为一致）。
-            if let Err(error) = tray_result {
-                if cfg!(windows) {
-                    return Err(error.into());
+            let mut tray_ready = false;
+            if tray_host {
+                let open = MenuItem::with_id(app, "open", "打开控制台", true, None::<&str>)?;
+                let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                let autostart = CheckMenuItem::with_id(
+                    app,
+                    "autostart",
+                    "开机自启",
+                    true,
+                    autostart_enabled,
+                    None::<&str>,
+                )?;
+                let _ = AUTOSTART_ITEM.set(autostart.clone());
+                let quit = MenuItem::with_id(app, "quit", "退出 LAN-Drop", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&open, &autostart, &quit])?;
+
+                let mut builder = TrayIconBuilder::with_id("main-tray")
+                    .tooltip("LAN-Drop")
+                    .menu(&menu)
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "open" => open_console(app),
+                        "autostart" => toggle_autostart(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    });
+                // 图标缺失不该让整个壳失败：没有图标的托盘项仍然是可用的入口。
+                if let Some(icon) = app.default_window_icon() {
+                    builder = builder.icon(icon.clone());
                 }
-                eprintln!("托盘不可用（{error}），LAN-Drop 以无托盘模式继续；退出：pkill -x LAN-Drop");
+                match builder.build(app) {
+                    Ok(_) => tray_ready = true,
+                    Err(error) => {
+                        // Windows 不降级：托盘是唯一交互入口，失败即 setup 失败（与历史行为一致）。
+                        if cfg!(windows) {
+                            return Err(error.into());
+                        }
+                        eprintln!("托盘不可用（{error}）。");
+                    }
+                }
+            }
+
+            eprintln!("LAN-Drop 服务端已在后台常驻，控制台 {}", console_url());
+            if !tray_ready {
+                // 无托盘宿主（WSLg / 极简会话 / GNOME 未装扩展）或托盘创建失败：
+                // 浏览器是用户唯一能看见的入口，启动即打开——但要等端口真的就绪（见
+                // open_console_when_ready：抢在 sidecar bind 之前打开只会得到错误页）。
+                eprintln!("（无托盘模式）退出：pkill -x LAN-Drop");
+                open_console_when_ready(app.handle().clone());
             }
             Ok(())
         })

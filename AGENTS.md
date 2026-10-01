@@ -95,12 +95,32 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
   （一次；build-essential/file/libssl-dev 本机已有）→ `pnpm desktop:resources`（按运行平台自动取
   Linux node）→ `pnpm --filter @lan-drop/desktop exec tauri build --bundles appimage`，产物
   `bundle/appimage/*.AppImage` 拷回 `dist/`。**WSLg 没有系统托盘**（StatusNotifierWatcher 缺失）：
-  libappindicator 只发 warning 不致命，进程照常跑；托盘目视项只能真 Linux 桌面验证，壳已做
-  「托盘初始化失败不退出」降级（仅 Linux 分支，Windows 托盘失败仍按 setup 失败退出）。
-- `@tauri-apps/cli` 2.x 平台包里是 `.node` 原生插件（如 `cli.win32-x64-msvc.node`），**没有独立
-  exe**。它已是 `apps/desktop` 的 devDependency（pnpm 按构建平台拉对应平台包）；Windows 侧早期
-  独立安装的方式：`npm install --registry=https://registry.npmmirror.com @tauri-apps/cli@2`
-  （不动全局 registry 配置），用本机 node 跑 `tauri.js`。
+  托盘目视项只能真 Linux 桌面验证；无托盘宿主时壳的处理见下一条「无托盘宿主降级」。
+- **无托盘宿主降级（仅 Linux，2026-10-01 专项修复）**：会话总线上没有
+  `org.kde.StatusNotifierWatcher`（WSLg / 极简会话 / GNOME 未装 AppIndicator 扩展）时，
+  **建托盘前就跳过它**（`status_notifier_watcher_present()`，GIO 查 `NameHasOwner`；
+  `gio`/`glib` 0.18 本就在 tray-icon/libappindicator 依赖树里，不是新下载）。原因是实测：
+  无宿主时 libayatana-appindicator 退化成 GtkStatusIcon fallback，托盘 widget 建不出来，
+  GTK 内部对空指针调 `gtk_widget_get_scale_factor` 打出
+  `Gtk-CRITICAL: assertion 'GTK_IS_WIDGET (widget)' failed`——**图标照样不显示**，
+  却让用户（和 Agent）以为服务端挂了；端口其实一直在听、`/api/v1/info` 从 Windows 侧
+  `localhost` 也返回 200。跳过托盘后改为**启动即打开控制台**（无托盘时浏览器是唯一入口）：
+  WSL 里走 `cmd.exe /c start "" <url>` 交给 Windows 侧默认浏览器（镜像模式下 Windows 浏览器
+  访问 `127.0.0.1:<回环端口>` 直达 WSL 监听器，实测 200），其余 Linux 走 xdg-open；
+  终端另打印一行控制台地址横幅，无托盘模式提示 `pkill -x LAN-Drop` 退出。
+  **必须等回环端口真的可连接再打开浏览器**：sidecar 是刚 spawn 的，node 要 ~0.6 秒才 bind，
+  抢先打开只会得到「无法访问此页面」——服务端日志里连一条请求都没有（连接被拒，根本没到达），
+  这正是用户报的「控制台打不开」；`open_console_when_ready()` 轮询到就绪（最多 30 秒）再开，
+  等待毫秒数打进 stderr。`is_wsl()` 与 `spawn_windows_browser()` 的失败都要打日志——
+  这条路上任何静默失败都表现成「什么都没发生」，事后极难定位。
+  **验收纪律：不要为了测这条路径反复弹用户的浏览器窗口**（实测会把用户惹毛）。用 PATH 前置
+  「cmd.exe 替身」（`/tmp/stubbin/cmd.exe`，一个记录 `$*` 与时刻的可执行脚本）跑 AppImage，
+  就能验证「传了什么参数、在端口就绪之后多久调用」，一个标签页都不开；真浏览器是否成功打开，
+  用服务端日志判断（连续出现 `GET /` + 静态资源 + `/api/v1/info` 即为浏览器加载了控制台）。
+  另：`install_linux_log_filter()` 只按域+固定文案滤掉那行 CRITICAL 与 libayatana 的
+  deprecation WARNING，其余 GTK 消息原样转交 GLib 默认处理器——**不要扩大过滤范围**；
+  托盘图标缺失也不再让 setup 失败。Windows 行为不变（托盘是唯一入口，失败即 setup 失败）。
+
 - 壳的行为约定：`single-instance` 插件必须最先注册（第二次启动=打开控制台，绝不出现第二个
   sidecar）；sidecar 意外退出时壳 `exit(1)`（`killed_by_us` 标记防止主动退出被 Terminated 事件
   误报成异常退出）；sidecar 的 stdout/stderr 落应用日志目录 `server-sidecar.log`（Windows：

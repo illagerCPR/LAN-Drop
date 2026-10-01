@@ -207,6 +207,7 @@ KSP 2.3.12 / compileSdk 37 / minSdk 33），**改动前请先读
 - **P4** 桌面常驻壳（Tauri 托盘 + Node sidecar）✅ · 系统分享面板 + 多选批量 ✅ · 时间线缩略图 ✅ · 传输暂停/继续 + 链接可点 ✅ · 消息保留策略 ✅
 - **安全加固轮（2026-10-01）** 0 字节文件上传 ✅ · token 日志脱敏与查询凭据收窄 ✅ · 分片写入互斥 + 客户端收尾摘要自证 ✅ · 设备撤销（Web 面板）✅ · CI（GitHub Actions）✅
 - **发布轮 v0.2.0（2026-10-01）** 自签 TLS + 指纹固定 ✅ · 磁盘满边界 ✅ · Android 多服务端 ✅ · Web 无障碍 ✅ · MIT LICENSE + CHANGELOG ✅ · Android release 签名 + minify ✅
+- **v0.2.1（2026-10-01，仅桌面壳）** Linux 无托盘宿主时的入口修复 ✅（不再打 Gtk-CRITICAL、启动即打开控制台、等端口就绪再开）
 - **未排期** 后台「常驻接收」开关（刻意不做，理由见 P3-2）· macOS 桌面壳
 
 详见 [docs/技术选型与开发计划.md](docs/技术选型与开发计划.md) 与 [CHANGELOG.md](CHANGELOG.md)。
@@ -440,6 +441,13 @@ PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口�
 | `dist/LAN-Drop_<版本>_amd64.AppImage` | Linux 便携可执行（免安装；运行需 FUSE 或 `--appimage-extract-and-run`） |
 
 - **托盘**：左键=打开控制台；菜单=打开控制台 / 开机自启（写 HKCU Run，用户级）/ 退出。
+- **无托盘宿主时的降级（仅 Linux）**：会话总线上没有 `org.kde.StatusNotifierWatcher`
+  （WSLg、极简会话、GNOME 未装 AppIndicator 扩展）时**根本不创建托盘**——那条路只会让
+  libayatana-appindicator 退化成失败的 GtkStatusIcon fallback（图标不显示，却在 GTK 内部打出
+  `gtk_widget_get_scale_factor: assertion 'GTK_IS_WIDGET (widget)' failed`），却什么也换不来。
+  此时**启动即打开控制台**（无托盘时浏览器是唯一入口）：WSL 里用 `cmd.exe /c start` 交给
+  Windows 侧默认浏览器（`127.0.0.1:<回环端口>` 可达 WSL 的回环监听器），其余 Linux 走 xdg-open。
+  终端另有一行横幅打印控制台地址；退出仍是 `pkill -x LAN-Drop`。Windows 不降级（托盘是唯一入口）。
 - **单实例**：重复启动不出现第二个 sidecar，第二次启动直接把控制台拉起来。
 - **生命周期**：退出时随杀 sidecar；服务端意外退出时壳随之退出（exit 1）。
   sidecar 日志：`%LOCALAPPDATA%\io.github.illagercpr.landrop.desktop\logs\server-sidecar.log`。
@@ -464,8 +472,8 @@ PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口�
 
   注意：**Linux 的 resources 落点与 Windows 不同**（AppRun 布局：sidecar node 在 exe 同级
   `usr/bin/`，`server/server.js` 与 `web/dist` 在 `usr/lib/LAN-Drop/`），壳内按存在性双候选探测。
-  WSLg 没有系统托盘——托盘目视项只能在真 Linux 桌面验证，壳对「托盘初始化失败」已做降级
-  （无托盘继续跑，仅 Linux 分支）。
+  WSLg 没有系统托盘，壳在「无 StatusNotifierWatcher」时跳过托盘并自动打开控制台（见上）；
+  托盘的目视项（图标 / 菜单 / 退出 / 自启）仍只能在真 Linux 桌面上确认。
 
 - **部署**：双击安装包 → 托盘出现 LAN-Drop → 打开控制台配对。防火墙规则仍用
   `scripts/windows-allow-lan.ps1`（管理员执行一次：TCP 8787 + UDP 8788）——安装包不代做防火墙。
@@ -483,6 +491,18 @@ PC 端的常驻形态是 **Tauri 2.x 托盘壳**：托盘常驻、没有窗口�
 pino 日志落 `~/.local/share/io.github.illagercpr.landrop.desktop/logs/`；数据根沿用
 `~/.local/share/lan-drop`（serverId 与既有 server.json 一致，手机设备行健在）；杀 sidecar → 壳退出
 （exit 1）。托盘项在 WSLg 无法目视（无系统托盘），待真 Linux 桌面确认。
+
+**验收记录（2026-10-01，Linux AppImage 专项 / v0.2.1）：** 同一台 WSLg 上重跑修复后的 AppImage：
+
+- 终端只剩两行启停提示，**不再出现** `Gtk-CRITICAL: gtk_widget_get_scale_factor …` 与
+  libayatana 的 deprecation warning（进程内日志过滤器 + 无托盘宿主时不建托盘）。
+- 服务端照常拉起：`0.0.0.0:8787`（https/wss）+ `127.0.0.1:8789`（回环明文）均在监听，
+  `GET /`、`/api/v1/info` 在本机与 Windows 侧 `http://127.0.0.1:8789/` 都是 200。
+- **控制台自动打开**：壳在回环端口可连接后才调用 Windows 侧浏览器——替身验证记录
+  「8789 就绪于启动后 ~0.6 s，`/c start "" http://127.0.0.1:8789/` 在就绪之后才发出」
+  （真浏览器打开时服务端日志连续出现 `GET /` + 静态资源 + `/api/v1/info`）。
+- 手机（vivo V2301A，release 0.2.0 客户端）连的是同一台服务端（同一数据根、同一 serverId），
+  无需重新配对。
 
 ## 系统分享面板与多选批量
 

@@ -30,8 +30,8 @@ android {
         // 省掉通知权限、存储权限、前台服务类型等大量旧版本兼容分支。
         minSdk = 33
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
 
         resourceConfigurations += listOf("zh", "en")
     }
