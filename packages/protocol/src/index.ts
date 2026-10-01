@@ -171,6 +171,17 @@ export interface CreateUploadResponse {
 }
 
 /**
+ * 收尾上传的请求体。
+ *
+ * `sha256` 是客户端对**整个文件**的自证摘要：分片接口逐片校验会让重传代价
+ * 翻倍，完整性只能靠收尾这一步校验。客户端不声明时服务端只计算并存档摘要，
+ * 不做校验（Web 端目前就是不声明的那个）。
+ */
+export interface CompleteUploadRequest {
+  sha256?: string;
+}
+
+/**
  * 上传会话的可续传视图（`GET /uploads/:id`、`GET /uploads`）。
  *
  * 存在的意义只有一个：客户端进程被杀之后，本地只剩一个 `uploadId`，

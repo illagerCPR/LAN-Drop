@@ -46,6 +46,15 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
   // 下载是唯一允许 ?token= 的 HTTP 接口：<img src> / <a download> 带不了请求头
   const downloadAuthHook = createAuthHook(ctx, { allowQueryToken: true });
 
+  // ---------------------------------------------------------------- 分片写入互斥
+  //
+  // 「同一会话同时只允许一个分片在写」必须由服务端强制：received_bytes 的推进
+  // 与文件追加是两步操作，两个并发请求会各自读到同一个 offset 并双双通过校验，
+  // 各自追加一份字节（实测确认过：receivedBytes 冲到两倍，文件从此错位）。
+  // 客户端天然串行（上传队列），但协议正确性不能依赖客户端自律。
+  // JS 单线程下「检查并占用」之间没有 await，不会交错。
+  const activeChunkWrites = new Set<string>();
+
   // ---------------------------------------------------------------- 创建上传会话
   app.post<{ Body: { name?: string; size?: number; mime?: string; sha256?: string } }>(
     ApiPath.uploads,
@@ -184,26 +193,41 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
         return reply.code(415).send({ error: "expected_octet_stream_body" });
       }
 
-      // 丢掉上一次中途断流留下的残字节，保证「开始追加时文件长度 = 本片 offset」。
-      // 没有这一步，断点续传会把新数据接在残字节后面，静默写坏文件。
-      await truncateTo(upload.tempPath, upload.receivedBytes);
-
-      const result = await appendStreamToFile(body, upload.tempPath, remaining);
-
-      if (result.overflowed) {
-        ctx.store.setUploadState(upload.id, "aborted");
-        await removeFileQuietly(upload.tempPath);
-        return reply.code(413).send({ error: "exceeds_declared_size", declaredSize: upload.size });
+      if (activeChunkWrites.has(upload.id)) {
+        return reply
+          .code(409)
+          .send({ error: "chunk_write_in_progress", receivedBytes: upload.receivedBytes });
       }
+      activeChunkWrites.add(upload.id);
 
-      const receivedBytes = ctx.store.addUploadBytes(upload.id, result.bytesWritten);
+      try {
+        // 丢掉上一次中途断流留下的残字节，保证「开始追加时文件长度 = 本片 offset」。
+        // 没有这一步，断点续传会把新数据接在残字节后面，静默写坏文件。
+        await truncateTo(upload.tempPath, upload.receivedBytes);
 
-      return { uploadId: upload.id, receivedBytes, size: upload.size };
+        const result = await appendStreamToFile(body, upload.tempPath, remaining);
+
+        if (result.overflowed) {
+          ctx.store.setUploadState(upload.id, "aborted");
+          await removeFileQuietly(upload.tempPath);
+          return reply.code(413).send({ error: "exceeds_declared_size", declaredSize: upload.size });
+        }
+
+        const receivedBytes = ctx.store.addUploadBytes(upload.id, result.bytesWritten);
+
+        return { uploadId: upload.id, receivedBytes, size: upload.size };
+      } finally {
+        activeChunkWrites.delete(upload.id);
+      }
     },
   );
 
   // ---------------------------------------------------------------- 完成上传
-  app.post<{ Params: { id: string } }>(
+  //
+  // body 可选携带 `sha256`：客户端在收尾时自证「我发的字节就是我读的字节」。
+  // 分片接口没有摘要能力（逐片校验会让重传代价翻倍），完整性只能靠收尾这一
+  // 机会校验——客户端不声明时，本步退化为「只算并存档摘要」，校验形同虚设。
+  app.post<{ Params: { id: string }; Body?: { sha256?: string } }>(
     `${ApiPath.uploads}/:id/complete`,
     { preHandler: authHook },
     async (request, reply) => {
@@ -218,6 +242,12 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
       }
       if (upload.state !== "open") {
         return reply.code(409).send({ error: "upload_not_open", state: upload.state });
+      }
+
+      const declaredDigest =
+        typeof request.body?.sha256 === "string" ? request.body.sha256.toLowerCase() : null;
+      if (declaredDigest !== null && !/^[0-9a-f]{64}$/.test(declaredDigest)) {
+        return reply.code(400).send({ error: "invalid_sha256" });
       }
       if (upload.receivedBytes !== upload.size) {
         return reply.code(409).send({
@@ -243,12 +273,17 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
 
       const digest = await sha256File(upload.tempPath);
 
-      if (upload.sha256 && upload.sha256 !== digest) {
+      // 建会话时声明的摘要与收尾时声明的摘要地位相同，任一不符都拒绝入库：
+      // 错字节一旦落成 file 行还广播了消息，客户端就会把损坏当成一次「成功」。
+      if (
+        (upload.sha256 !== null && upload.sha256 !== digest) ||
+        (declaredDigest !== null && declaredDigest !== digest)
+      ) {
         ctx.store.setUploadState(upload.id, "aborted");
         await removeFileQuietly(upload.tempPath);
         return reply
           .code(422)
-          .send({ error: "sha256_mismatch", expected: upload.sha256, actual: digest });
+          .send({ error: "sha256_mismatch", expected: upload.sha256 ?? declaredDigest, actual: digest });
       }
 
       const fileId = randomUUID();

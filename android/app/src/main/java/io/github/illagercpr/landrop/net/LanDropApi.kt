@@ -3,6 +3,7 @@ package io.github.illagercpr.landrop.net
 import io.github.illagercpr.landrop.data.prefs.Connection
 import io.github.illagercpr.landrop.protocol.ApiErrorDto
 import io.github.illagercpr.landrop.protocol.ApiPath
+import io.github.illagercpr.landrop.protocol.CompleteUploadRequestDto
 import io.github.illagercpr.landrop.protocol.CreateUploadRequestDto
 import io.github.illagercpr.landrop.protocol.CreateUploadResponseDto
 import io.github.illagercpr.landrop.protocol.MessageDto
@@ -121,10 +122,20 @@ class LanDropApi(
         return decode(execute(request))
     }
 
-    /** 收尾：服务端校验 sha256、把临时文件移到正式目录并落一条文件消息。 */
-    suspend fun completeUpload(connection: Connection, uploadId: String): MessageDto {
+    /**
+     * 收尾：服务端校验 sha256、把临时文件移到正式目录并落一条文件消息。
+     *
+     * [sha256] 是客户端对整个文件的自证摘要（服务端不符即 422 且会话中止）；
+     * 始终传入——它是 Android 侧唯一的完整性防线。`CompleteUploadRequestDto`
+     * 与协议包的 `CompleteUploadRequest` 逐字段对齐。
+     */
+    suspend fun completeUpload(connection: Connection, uploadId: String, sha256: String?): MessageDto {
+        val body = json.encodeToString(
+            CompleteUploadRequestDto.serializer(),
+            CompleteUploadRequestDto(sha256 = sha256),
+        )
         val request = authorized(connection, "${ApiPath.UPLOADS}/$uploadId/complete")
-            .post(EMPTY_JSON_BODY)
+            .post(body.toRequestBody(jsonMediaType))
             .build()
         return decode(execute(request))
     }
@@ -211,15 +222,6 @@ class LanDropApi(
 
     companion object {
         val OCTET_STREAM = "application/octet-stream".toMediaType()
-
-        /**
-         * 收尾请求的请求体。
-         *
-         * 服务端该路由是「无业务入参的 POST」，但 Fastify 对 `application/json`
-         * 的空请求体不友好，因此显式发一个 `{}`——与 Web 端 `api.ts` 的做法一致。
-         */
-        private val EMPTY_JSON_BODY: RequestBody =
-            "{}".toRequestBody("application/json; charset=utf-8".toMediaType())
     }
 }
 

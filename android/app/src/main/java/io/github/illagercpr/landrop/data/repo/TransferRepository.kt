@@ -24,6 +24,7 @@ import io.github.illagercpr.landrop.net.toUserMessage
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -300,8 +301,18 @@ class TransferRepository(
             dao.upsert(entity)
 
             var stream = openSource(uri)
+            // 整文件 sha256：边传边算，收尾时随 complete 自证（服务端 422 兜底坏字节）。
+            // digestCovered 记录摘要已覆盖到本地文件的哪个字节，与服务端已确认进度同义。
+            val digest = MessageDigest.getInstance("SHA-256")
+            var digestCovered = 0L
             try {
-                stream.skipFully(offset)
+                if (offset > 0) {
+                    // 续传会话：0..offset 早已在服务端落盘，但本进程没有任何摘要记忆
+                    // ——只有把本地文件这一段重读一遍补进摘要，收尾时才能交出完整
+                    // 指纹。这就是「选项 B」的代价：恢复一次多读一遍前缀。
+                    seedDigest(stream, digest, offset)
+                    digestCovered = offset
+                }
                 val buffer = ByteArray(chunkSize.coerceIn(MIN_CHUNK, MAX_CHUNK).toInt())
                 var realignments = 0
 
@@ -316,7 +327,9 @@ class TransferRepository(
                     } catch (e: ApiException) {
                         val authoritative = e.errorBody?.receivedBytes
                         if (e.statusCode == 409 && authoritative != null && realignments < MAX_REALIGN) {
-                            // 服务端进度与本地不一致：跳回权威位置重发这一片
+                            // 服务端进度与本地不一致：跳回权威位置重发这一片。
+                            // 摘要覆盖区间一并对齐：服务端超前的那段从本地文件补读进
+                            // 摘要；服务端回退则说明摘要里已混入未接受的字节，从头重算。
                             realignments++
                             offset = authoritative
                             entity = entity.copy(transferredBytes = offset, updatedAt = now())
@@ -324,13 +337,23 @@ class TransferRepository(
 
                             stream.close()
                             stream = openSource(uri)
-                            stream.skipFully(offset)
+                            if (offset > digestCovered) {
+                                stream.skipFully(digestCovered)
+                                seedDigest(stream, digest, offset - digestCovered)
+                            } else {
+                                digest.reset()
+                                seedDigest(stream, digest, offset)
+                            }
+                            digestCovered = offset
                             continue
                         }
                         throw e
                     }
 
                     offset = response.receivedBytes
+                    // 摘要只吃「服务端确认落盘」的字节——被 409 拒掉的重发不能进摘要
+                    digest.update(buffer, 0, read)
+                    digestCovered = offset
                     entity = entity.copy(transferredBytes = offset, updatedAt = now())
                     dao.upsert(entity)
                 }
@@ -343,7 +366,7 @@ class TransferRepository(
                 return@withContext
             }
 
-            val message = api.completeUpload(connection, uploadId)
+            val message = api.completeUpload(connection, uploadId, digest.digest().toHexString())
             messageDao.upsert(message.toEntity(connection.deviceId))
 
             dao.upsert(
@@ -1039,5 +1062,20 @@ private fun InputStream.skipFully(target: Long) {
         // 部分流不支持 skip，退回逐字节读取
         if (read() < 0) break
         remaining--
+    }
+}
+
+/**
+ * 从流当前位置起读恰好 [count] 字节喂进摘要（补齐续传/对齐丢失的覆盖区间）。
+ * 文件比预期短（读到 EOF）时抛错，由调用方按可恢复失败处理。
+ */
+private fun seedDigest(stream: InputStream, digest: MessageDigest, count: Long) {
+    val buffer = ByteArray(256 * 1024)
+    var remaining = count
+    while (remaining > 0) {
+        val read = stream.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+        if (read < 0) throw IllegalStateException("文件比预期短，无法计算完整摘要")
+        digest.update(buffer, 0, read)
+        remaining -= read
     }
 }

@@ -168,6 +168,18 @@ data class CreateUploadResponseDto(
     @SerialName("chunkSize") val chunkSize: Long,
 )
 
+/**
+ * 收尾上传的请求体。
+ *
+ * `sha256` 是客户端对**整个文件**的自证摘要：分片接口逐片校验会让重传代价
+ * 翻倍，完整性只能靠收尾这一步校验。Android 始终声明（边传边算，续传会话
+ * 先重读本地文件补齐前缀摘要）；不声明时服务端只计算并存档摘要，不做校验。
+ */
+@Serializable
+data class CompleteUploadRequestDto(
+    @SerialName("sha256") val sha256: String? = null,
+)
+
 /** 分片追加的响应体，对应 `PATCH /api/v1/uploads/:id?offset=`。 */
 @Serializable
 data class UploadPatchResponseDto(

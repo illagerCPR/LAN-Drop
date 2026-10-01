@@ -259,4 +259,19 @@ class ProtocolJsonTest {
         )
         assertEquals("""{"kind":"text","text":"你好"}""", encoded)
     }
+
+    @Test
+    fun `收尾摘要请求体省略空字段且字段名与服务端约定一致`() {
+        // Android 收尾必带 sha256；省略 null 字段，避免服务端看到 "sha256":null
+        val encoded = ProtocolJson.encodeToString(
+            CompleteUploadRequestDto.serializer(),
+            CompleteUploadRequestDto(sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+        )
+        assertEquals(
+            """{"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}""",
+            encoded,
+        )
+        // 不带摘要的收尾是合法的空对象（服务端只算并存档摘要）
+        assertEquals("{}", ProtocolJson.encodeToString(CompleteUploadRequestDto.serializer(), CompleteUploadRequestDto(null)))
+    }
 }
