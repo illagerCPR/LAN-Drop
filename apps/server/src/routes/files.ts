@@ -28,6 +28,7 @@ import {
   sanitizeFileName,
   sha256File,
   truncateTo,
+  writeEmptyFile,
 } from "../storage.ts";
 import { createAuthHook } from "./pair.ts";
 
@@ -79,6 +80,12 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
             : null,
         tempPath: join(tempDir, `${randomUUID()}.part`),
       });
+
+      // 0 字节文件没有任何分片请求（分片接口对 remaining<=0 一律 409），
+      // 临时文件必须在这里就落盘，complete 才有东西可校验、可搬移。
+      if (size === 0) {
+        await writeEmptyFile(upload.tempPath);
+      }
 
       const response: CreateUploadResponse = {
         uploadId: upload.id,
@@ -215,6 +222,20 @@ export function registerFileRoutes(app: FastifyInstance, ctx: AppContext): void 
           error: "incomplete",
           receivedBytes: upload.receivedBytes,
           size: upload.size,
+        });
+      }
+
+      // 权威进度（received_bytes）之外再核对一次盘上真实字节数：两者由两条路径
+      // 维护（DB 在追加成功后推进、文件在流写入时增长），任何一侧丢了事件都会
+      // 静默漂移。收尾是最后一道关：不一致就拒绝入库，绝不把错位文件当成功；
+      // 顺带把「临时文件不存在」从 sha256File 的 ENOENT 500 变成明确的上游错误。
+      const onDisk = await stat(upload.tempPath).catch(() => null);
+      if (onDisk === null || onDisk.size !== upload.size) {
+        return reply.code(409).send({
+          error: "size_mismatch_on_disk",
+          receivedBytes: upload.receivedBytes,
+          size: upload.size,
+          onDiskSize: onDisk?.size ?? null,
         });
       }
 

@@ -241,7 +241,9 @@ class TransferRepository(
             return@withContext
         }
 
-        if (picked.size <= 0) {
+        // 只有「大小解析不出来」（resolvePickedFile 以 -1 表示）才失败；
+        // 0 是合法的空文件，走「无分片、直接收尾」路径，服务端同样支持。
+        if (picked.size < 0) {
             failBeforeStart(transferId, existing, "无法确定文件大小（${picked.name}）")
             return@withContext
         }

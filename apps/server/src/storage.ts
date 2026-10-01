@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, stat, truncate, unlink } from "node:fs/promises";
+import { mkdir, rename, stat, truncate, unlink, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -131,6 +131,17 @@ export async function appendStreamToFile(
 /** 确保目录存在（递归）。 */
 export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
+}
+
+/**
+ * 落一个空文件。
+ *
+ * 0 字节上传没有任何分片请求（追加接口对 remaining<=0 一律 409），临时文件
+ * 必须在会话创建时就存在——否则 complete 在 sha256File 的 ENOENT 上炸成 500
+ * （实测踩过）。空文件是合法文件，不是异常。
+ */
+export async function writeEmptyFile(absPath: string): Promise<void> {
+  await writeFile(absPath, new Uint8Array(0));
 }
 
 /** 把临时文件搬到最终位置；跨目录同盘时 rename 是原子操作。 */
