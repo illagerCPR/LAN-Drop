@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     // AGP 9 起 Kotlin 支持内置于 AGP（不再应用 org.jetbrains.kotlin.android，
@@ -5,6 +7,16 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+}
+
+// release 签名材料在 android/keystore/keystore.properties（gitignored，勿提交！）。
+// 没有该文件时 release 构建退回未签名（assembleRelease 仍可跑，产物不带签名），
+// CI 的 JVM 单测不受 keystore 缺失影响。
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore/keystore.properties")
+    if (file.exists()) {
+        file.inputStream().use { stream -> load(stream) }
+    }
 }
 
 android {
@@ -18,10 +30,21 @@ android {
         // 省掉通知权限、存储权限、前台服务类型等大量旧版本兼容分支。
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         resourceConfigurations += listOf("zh", "en")
+    }
+
+    signingConfigs {
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -31,11 +54,17 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = false
+            // R8 收缩 + 资源收缩：42.9 MB 的 debug 配置产物能砍到 5 MB 上下。
+            // 反序列化模型的 keep 规则见 proguard-rules.pro（kotlinx.serialization）。
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (keystoreProperties.isNotEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

@@ -55,3 +55,6 @@ keystore.properties
 .env.local
 *.pem
 *.p12
+
+# ---- Android release 签名材料（切勿提交：丢了无法再为更新签名）----
+/android/keystore/

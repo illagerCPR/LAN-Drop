@@ -1,6 +1,7 @@
 # LAN-Drop ProGuard 规则
-# 目前 release 未开启压缩（isMinifyEnabled = false）。
-# 开启压缩时，kotlinx.serialization 与 OkHttp 需要保留其元数据/反射信息：
+# release 已开启 R8 收缩（isMinifyEnabled = true）+ 资源收缩。
+# 本项目无 Java 反射调用；协议 DTO 全部由 kotlinx.serialization 编译期生成序列化器，
+# 保留其生成物即可；Room/OkHttp/Compose 自带 consumer 规则。
 
 # kotlinx.serialization：保留 @Serializable 生成的序列化器
 -keepattributes *Annotation*, InnerClasses
