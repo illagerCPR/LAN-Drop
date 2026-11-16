@@ -33,7 +33,7 @@ pnpm fix:ps1-bom            # .ps1 缺 UTF-8 BOM 时补齐（--check 只检查�
 ## 环境与镜像（本机硬事实，勿改回官方源）
 
 - npm → npmmirror（`.npmrc`）；Gradle 发行版 → 腾讯云（wrapper）；Maven → `google()` 直连 + 阿里云，顺序见 `android/settings.gradle.kts` 顶部注释。官方源实测仅 44~210 KB/s，镜像 1.2~3.2 MB/s。
-- 本机 `/etc/hosts` 把 github.com 劫持到本地反代：curl 可用，但 **Java/Gradle 直连 GitHub 会 PKIX 失败**。任何构建依赖都不要走 GitHub 直链。
+- 本机 `/etc/hosts` 历史上曾把 github.com 劫持到本地反代（导致 Java/Gradle 直连 GitHub PKIX 失败）。**反代已于 2026-11-16 停用删除**：`/etc/hosts` 现无 github 劫持条目，github.com 证书为官方 Sectigo、系统 CA 库校验 `Verify return code: 0 (ok)`。构建依赖走 GitHub 直链不再有证书问题；镜像源仍因速度优势保留。
 - Rust：rustup dist 走 **TUNA**（`https://mirrors.tuna.tsinghua.edu.cn/rustup`；rsproxy 的 rustup dist 镜像缺 channel 清单，实测 404）；crates.io 的 sparse 索引走 **rsproxy**（Windows 侧写死在 `C:\Users\illag\.cargo\config.toml`）。Windows 侧已有 stable-msvc 工具链 + VS 18 BuildTools（MSVC 14.51）+ WebView2 运行时，桌面壳构建在 Windows 侧做。
 - WSL2 镜像网络模式；手机访问 WSL 服务端靠 Windows 防火墙放行规则（`scripts/windows-allow-lan.ps1`，已执行过，无需重跑）。「Windows 访问自己的 LAN IP 超时」是镜像模式**假阴性**，以服务端日志 `remoteAddress` 判断手机连通性。
 
